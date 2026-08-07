@@ -1,0 +1,17 @@
+# =============================================================================
+# Dash0 SignalControl on the edge - the default install
+# =============================================================================
+#   cp base/dash0.env.example base/dash0.env
+#   cp base/token.env.example base/token.env
+#   $EDITOR base/dash0.env base/token.env
+#   kubectl apply -k .
+#
+# Everything is in base/. This file exists so the install command is
+# `kubectl apply -k .` and so the two optional overlays (endpoints/, loadgen/)
+# can sit beside it: kustomize refuses an overlay nested inside its own base.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - base

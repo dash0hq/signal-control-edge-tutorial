@@ -1,0 +1,194 @@
+# =============================================================================
+# Edge collector
+# =============================================================================
+# Your central collector exports OTLP to dash0-edge-collector:4317. This
+# collector enriches, filters, derives RED and signal-to-metrics, tail samples,
+# and exports to Dash0.
+#
+# Nothing in this file needs editing. Its ten parameters come from dash0.env,
+# token.env, and the downward API.
+#
+# The namespace is never written here. `namespace:` in kustomization.yaml
+# rewrites metadata.namespace, but it does NOT reach inside an env value, so a
+# hardcoded service address would survive `kubectl apply -k` into any other
+# namespace: the pods go Ready, the collector talks to nothing, and it falls
+# back to keeping 100% of spans while looking healthy. POD_NAMESPACE from the
+# downward API is what makes this file portable.
+#
+# There is no config-checksum annotation: kustomize hashes the generated
+# ConfigMaps into their names, so editing collector-config.yaml or dash0.env
+# changes the pod template and rolls the pods by itself.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash0-edge-collector
+  labels:
+    app.kubernetes.io/name: dash0-edge-collector
+    app.kubernetes.io/component: collector
+spec:
+  # No HorizontalPodAutoscaler on the collector. Every pod that goes away loses
+  # the traces buffered in its sampling reservoir, so autoscaling trades a
+  # little CPU for a steady trickle of incomplete traces. Fixed count, changed
+  # deliberately.
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-collector
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dash0-edge-collector
+        app.kubernetes.io/component: collector
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: dash0-edge-collector
+      containers:
+        - name: collector
+          image: ghcr.io/dash0hq/signal-control-collector:v2.0.2756
+          imagePullPolicy: IfNotPresent
+          # Run the binary directly instead of through the image's default shell
+          # wrapper. The wrapper does not forward SIGTERM, so without this every
+          # pod termination waits out the full grace period and is then killed.
+          command: ["/otelcol"]
+          args: ["--config", "/etc/otelcol/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          ports:
+            - { name: otlp-grpc, containerPort: 4317, protocol: TCP }
+            - { name: otlp-http, containerPort: 4318, protocol: TCP }
+            - { name: health, containerPort: 13133, protocol: TCP }
+          env:
+            # --- primitives, from the downward API ---------------------------
+            # The namespace this pod was applied into. Declared FIRST: it is
+            # composed into EDGE_PROXY_ENDPOINT below, and collector-config.yaml
+            # reads it as ${env:POD_NAMESPACE} for the self-telemetry
+            # service.namespace. Both would otherwise name a namespace hardcoded
+            # in a file the kustomize namespace transformer cannot rewrite.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            # --- primitives, from dash0.env and token.env --------------------
+            # ORDER MATTERS: DASH0_REGION and DASH0_DOMAIN must be declared
+            # before the entry that composes them.
+            - name: DASH0_REGION
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_REGION }
+            - name: DASH0_DOMAIN
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_DOMAIN }
+            - name: DASH0_DATASET
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_DATASET }
+            - name: DASH0_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: dash0-edge-token, key: token }
+            # --- derived -------------------------------------------------------
+            - name: DASH0_OTLP_ENDPOINT
+              value: "ingress.$(DASH0_REGION).$(DASH0_DOMAIN):4317"
+            - name: EDGE_PROXY_ENDPOINT
+              value: "dash0-edge-proxy.$(POD_NAMESPACE).svc.cluster.local:8011"
+            # Must be unique per pod, or all replicas write their self-telemetry
+            # to one time series and the numbers you read back are wrong.
+            - name: SELF_SERVICE_INSTANCE_ID
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
+            # --- tuning ---------------------------------------------------------
+            # Sampling buffer ceiling for this pod. Keep it comfortably below the
+            # memory limit; the rest is pipeline and export overhead.
+            - name: RESERVOIR_MAX_MEMORY_BYTES
+              value: "2147483648" # 2 GiB
+            # How long a trace waits for its decision. Shared with whatever
+            # latency your central collector adds in front of it.
+            - name: RESERVOIR_BUFFER_DURATION
+              value: "30s"
+            # 1.0 = keep everything while sampling rules are unavailable. The
+            # collector's own default is 0.01, which is hard to tell apart from
+            # a working install while you are still setting rules up. Lower it
+            # once your rules are in place. See collector-config.yaml.
+            - name: SAMPLING_FALLBACK_SAMPLE_RATIO
+              value: "1.0"
+            - name: LOG_LEVEL
+              value: "info"
+            # Keep in step with resources.limits.memory below (~85%).
+            - name: GOMEMLIMIT
+              value: "3400MiB"
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          # These probes only say the process is running. They stay green while
+          # the Edge Proxy is unreachable and while every export is failing. Do
+          # not read them as "sampling is working".
+          livenessProbe:
+            httpGet: { path: /, port: health }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Leave the Service endpoints before shutting down. This does not
+              # save the buffered traces: whatever is in the reservoir when a pod
+              # stops is lost, so roll the collector when traffic is low.
+              exec: { command: ["/bin/sleep", "10"] }
+          resources:
+            # The memory request is close to the limit on purpose: the sampling
+            # reservoir is a real in-process allocation that fills under load.
+            requests: { cpu: "500m", memory: "3Gi" }
+            limits: { cpu: "2", memory: "4Gi" }
+      volumes:
+        - name: config
+          configMap: { name: dash0-edge-collector-config }
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 16Mi }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash0-edge-collector
+  labels:
+    app.kubernetes.io/name: dash0-edge-collector
+spec:
+  # This is the address your central collector exports to.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: dash0-edge-collector
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc, protocol: TCP, appProtocol: grpc }
+    - { name: otlp-http, port: 4318, targetPort: otlp-http, protocol: TCP, appProtocol: http }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dash0-edge-collector
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-collector

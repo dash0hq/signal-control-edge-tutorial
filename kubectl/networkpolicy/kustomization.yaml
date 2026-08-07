@@ -1,0 +1,17 @@
+# Optional NetworkPolicy overlay.
+#
+#   kubectl apply -k networkpolicy
+#
+# Smoke-test it before you depend on the install. Read the comments in
+# networkpolicy.yaml first: if your CNI enforces host-to-pod traffic you must
+# add your node CIDR, or the kubelet probes are blocked and the Edge Proxy
+# CrashLoops on its liveness check.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - networkpolicy.yaml
+
+# Must match `namespace:` in base/kustomization.yaml.
+namespace: dash0-signal-control

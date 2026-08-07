@@ -1,0 +1,14 @@
+{{- if and .Values.collector.enabled .Values.collector.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "dash0edge.collectorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.collector.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+{{- end }}

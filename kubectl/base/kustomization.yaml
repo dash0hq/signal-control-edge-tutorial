@@ -1,0 +1,55 @@
+# =============================================================================
+# Dash0 SignalControl on the edge - base
+# =============================================================================
+# Apply from the parent directory: `kubectl apply -k ..`
+#
+# Nothing in any .yaml here needs editing. Do not run sed over these files.
+# The only files you touch are dash0.env and token.env.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dash0-signal-control
+
+resources:
+  - namespace.yaml
+  - edge-proxy.yaml
+  - edge-collector.yaml
+
+configMapGenerator:
+  # The primitives. The Deployments pull them in with configMapKeyRef and
+  # compose the endpoints from them with $(VAR).
+  - name: dash0-edge-settings
+    envs:
+      - dash0.env
+
+  # The collector config. It lives here as a copy because kustomize refuses to
+  # read a file outside its own directory: it rejects a relative path and a
+  # symlink alike.
+  #
+  # ../../chart/files/collector-config.yaml is the second copy, identical except
+  # for one Helm-templated line. Edit both, then run the check in
+  # ../README.md#keeping-the-two-collector-configs-in-step.
+  - name: dash0-edge-collector-config
+    files:
+      - config.yaml=collector-config.yaml
+
+secretGenerator:
+  - name: dash0-edge-token
+    envs:
+      - token.env
+
+# Name hashes are left ON deliberately: a change to dash0.env, token.env or
+# collector-config.yaml produces a new object name, which changes the pod
+# template, which rolls the pods. That replaces the config-checksum annotation
+# you would otherwise maintain by hand.
+#
+# The cost is that superseded ConfigMaps and Secrets are left behind. Remove them
+# with `kubectl delete -k .`, or by deleting the namespace when you are done.
+# Do NOT use `kubectl apply --prune`: the shared part-of label is applied to the
+# Namespace object too, which puts namespaces in prune scope.
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: dash0-signal-control

@@ -1,0 +1,13 @@
+{{- if .Values.collector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dash0edge.collectorName" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "dash0edge.collectorConfig" . | nindent 4 }}
+{{- end }}

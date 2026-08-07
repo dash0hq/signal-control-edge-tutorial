@@ -1,0 +1,164 @@
+{{- if .Values.edgeProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dash0edge.proxyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+    app.kubernetes.io/component: edge-proxy
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  {{- /*
+  Set explicitly even with the autoscaler on. A Deployment applied without its
+  HPA silently gets one replica, and a single Edge Proxy means every collector
+  loses its decision stream together on any restart, rollout or node drain.
+  */}}
+  replicas: {{ .Values.edgeProxy.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+        app.kubernetes.io/component: edge-proxy
+        {{- include "dash0edge.commonLabels" . | nindent 8 }}
+      annotations:
+        {{- if include "dash0edge.createSecret" . }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.edgeProxy.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+      {{- with .Values.edgeProxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edgeProxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.edgeProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: edge-proxy
+          image: {{ include "dash0edge.proxyImage" . | quote }}
+          imagePullPolicy: {{ .Values.edgeProxy.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - { name: grpc, containerPort: 8011, protocol: TCP }
+            - { name: internal, containerPort: 8012, protocol: TCP }
+          env:
+            {{- /*
+            DASH0_TOKEN is declared FIRST so the two header strings below can
+            compose it with $(VAR). Kubernetes expands $(VAR) inside an env
+            value using variables declared EARLIER in the same container's env
+            list, so order here is load bearing: move this entry down and the
+            headers ship the literal text "$(DASH0_TOKEN)".
+            Composing this way keeps the token out of the Deployment manifest.
+            */}}
+            - name: DASH0_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dash0edge.tokenSecretName" . }}
+                  key: {{ include "dash0edge.tokenSecretKey" . }}
+            # --- sampling decision stream -----------------------------------
+            - name: UPSTREAM_ADDRESS
+              value: {{ include "dash0edge.decisionMakerEndpoint" . | quote }}
+            - name: UPSTREAM_HEADERS
+              value: "authorization=Bearer $(DASH0_TOKEN),Dash0-Dataset={{ include "dash0edge.dataset" . }}"
+            - name: FALLBACKMINCONNECTEDRATIO
+              value: {{ .Values.edgeProxy.fallbackMinConnectedRatio | quote }}
+            # --- organisation settings feed ---------------------------------
+            - name: UPSTREAM_EDGESETTINGS_ENABLED
+              value: "true"
+            - name: UPSTREAM_EDGESETTINGS_ADDRESS
+              value: {{ include "dash0edge.apiEndpoint" . | quote }}
+            {{- /*
+            No dataset header here: each rule carries its own dataset, so the
+            settings poller fetches the whole organisation.
+            */}}
+            - name: UPSTREAM_EDGESETTINGS_HEADERS
+              value: "authorization=Bearer $(DASH0_TOKEN)"
+            - name: UPSTREAM_EDGESETTINGS_REFRESHINTERVAL
+              value: {{ .Values.edgeProxy.settingsRefreshInterval | quote }}
+            # --- server ------------------------------------------------------
+            - name: LISTENADDRESS
+              value: ":8011"
+            - name: LISTENADDRESSINTERNAL
+              value: ":8012"
+            - name: LOGLEVEL
+              value: {{ .Values.edgeProxy.logLevel | quote }}
+            - name: DEBUG
+              value: {{ .Values.edgeProxy.debug | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.edgeProxy.gomemlimit | quote }}
+            {{- if .Values.collector.enabled }}
+            # --- the Edge Proxy's own telemetry, via the local collector -----
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://{{ include "dash0edge.collectorEndpoint" . }}"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            - name: OTEL_SERVICE_NAME
+              value: "edge-proxy"
+            {{- end }}
+          {{- /*
+          Readiness is gated on the connection to the Dash0 Decision-Maker. A
+          pod that never becomes Ready means the token, the region or your
+          egress rules are wrong: check its logs, not the collector's.
+          */}}
+          livenessProbe:
+            grpc: { port: 8011, service: liveness }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            grpc: { port: 8011, service: readiness }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              {{- /*
+              Leave the Service endpoints before the process starts shutting
+              down, so reconnecting collectors are not sent straight back to a
+              terminating pod.
+              */}}
+              exec:
+                command: ["/bin/sleep", "15"]
+          resources:
+            {{- toYaml .Values.edgeProxy.resources | nindent 12 }}
+{{- end }}

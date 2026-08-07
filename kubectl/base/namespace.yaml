@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dash0-signal-control
+  labels:
+    # Both workloads are written to pass the `restricted` Pod Security Standard.
+    # Remove these labels if your cluster manages PSS centrally.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

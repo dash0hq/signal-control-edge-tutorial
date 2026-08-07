@@ -1,0 +1,35 @@
+{{- if and .Values.edgeProxy.enabled .Values.edgeProxy.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "dash0edge.proxyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "dash0edge.proxyName" . }}
+  minReplicas: {{ .Values.edgeProxy.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.edgeProxy.autoscaling.maxReplicas }}
+  {{- /*
+  CPU only. A memory target would never fire: the process idles far below any
+  sane percentage of its request, so it would just be noise in `kubectl get hpa`.
+  */}}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.edgeProxy.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{ type: Pods, value: 2, periodSeconds: 60 }]
+    scaleDown:
+      {{- /* Every pod removed forces its collectors to reconnect, so scale in slowly. */}}
+      stabilizationWindowSeconds: {{ .Values.edgeProxy.autoscaling.scaleDownStabilizationWindowSeconds }}
+      policies: [{ type: Pods, value: 1, periodSeconds: 300 }]
+{{- end }}

@@ -1,0 +1,20 @@
+# =============================================================================
+# Explicit endpoints instead of region + domain
+# =============================================================================
+# Only needed when your Dash0 hosts do not follow <prefix>.<region>.<domain>.
+# Uncomment and fill ALL THREE DASH0_ENDPOINT_* keys in ../base/dash0.env, then:
+#
+#   kubectl apply -k endpoints
+#
+# Reads the same ../base/dash0.env and ../base/token.env. DASH0_REGION and
+# DASH0_DOMAIN are still required, they are just no longer used to build the
+# endpoints.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+
+patches:
+  - path: patch-endpoints.yaml

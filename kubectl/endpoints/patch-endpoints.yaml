@@ -1,0 +1,54 @@
+# Replaces the three derived endpoints with values read straight from
+# dash0.env. `value: null` deletes the composed string that the base sets; an
+# env entry carrying both `value` and `valueFrom` is rejected by the API server.
+#
+# The keyRefs are NOT optional. A key missing from dash0.env stops the pod with
+# `CreateContainerConfigError: couldn't find key ... in ConfigMap`. That is the
+# point: an optional keyRef would leave the literal text `$(DASH0_ENDPOINT_...)`
+# in place and the pod would start against a nonsense hostname.
+#
+# A strategic merge patch hoists the entries it touches to the front of the env
+# list. That is safe here because all three are valueFrom, and the composed
+# entries that survive (UPSTREAM_HEADERS, UPSTREAM_EDGESETTINGS_HEADERS) still
+# come after the primitives they reference. Re-check the rendered order with
+# `kubectl kustomize endpoints` if you add an entry to this patch.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash0-edge-proxy
+spec:
+  template:
+    spec:
+      containers:
+        - name: edge-proxy
+          env:
+            - name: UPSTREAM_ADDRESS
+              value: null
+              valueFrom:
+                configMapKeyRef:
+                  name: dash0-edge-settings
+                  key: DASH0_ENDPOINT_DECISION_MAKER
+            - name: UPSTREAM_EDGESETTINGS_ADDRESS
+              value: null
+              valueFrom:
+                configMapKeyRef:
+                  name: dash0-edge-settings
+                  key: DASH0_ENDPOINT_API
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash0-edge-collector
+spec:
+  template:
+    spec:
+      containers:
+        - name: collector
+          env:
+            - name: DASH0_OTLP_ENDPOINT
+              value: null
+              valueFrom:
+                configMapKeyRef:
+                  name: dash0-edge-settings
+                  key: DASH0_ENDPOINT_OTLP

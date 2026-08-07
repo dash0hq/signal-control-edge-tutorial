@@ -1,0 +1,18 @@
+{{- if .Values.collector.enabled }}
+{{- /* This is the address your central collector exports to. */ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dash0edge.collectorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  type: {{ .Values.collector.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+  ports:
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc, protocol: TCP, appProtocol: grpc }
+    - { name: otlp-http, port: 4318, targetPort: otlp-http, protocol: TCP, appProtocol: http }
+{{- end }}

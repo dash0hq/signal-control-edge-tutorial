@@ -1,0 +1,103 @@
+{{- include "dash0edge.validate" . -}}
+Dash0 SignalControl on the edge, release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Resolved configuration
+----------------------
+  dataset         {{ include "dash0edge.dataset" . }}
+  region          {{ include "dash0edge.region" . }}
+  domain          {{ include "dash0edge.domain" . }}
+  token secret    {{ include "dash0edge.tokenSecretName" . }} (key: {{ include "dash0edge.tokenSecretKey" . }}){{ if not (include "dash0edge.createSecret" .) }} [pre-existing]{{ end }}
+
+Resolved endpoints
+------------------
+  Dash0 API       {{ include "dash0edge.apiEndpoint" . }}{{ if .Values.dash0.endpoints.api }}   [override]{{ end }}
+  OTLP ingress    {{ include "dash0edge.otlpEndpoint" . }}{{ if .Values.dash0.endpoints.otlpIngress }}   [override]{{ end }}
+  Decision-Maker  {{ include "dash0edge.decisionMakerEndpoint" . }}{{ if .Values.dash0.endpoints.decisionMaker }}   [override]{{ end }}
+{{- if ne (include "dash0edge.domain" .) "aws.dash0.com" }}
+
+  NOTE: domain is {{ include "dash0edge.domain" . }}, not the default aws.dash0.com.
+{{- end }}
+
+{{ if .Values.collector.enabled -}}
+Point your central collector at
+-------------------------------
+  {{ include "dash0edge.collectorEndpoint" . }}          (OTLP/gRPC)
+  {{ include "dash0edge.collectorName" . }}.{{ .Release.Namespace }}.svc.cluster.local:4318          (OTLP/HTTP)
+{{ end }}
+Next
+----
+{{- /*
+Bullets, not numbers. Half of these steps are conditional, and hardcoded
+numbering leaves gaps like "1, 2, 4" when a workload is disabled, which is
+exactly what a staged install does.
+*/}}
+* Wait for {{ if and .Values.collector.enabled .Values.edgeProxy.enabled }}both workloads{{ else }}the workload{{ end }} to be Ready:
+{{ if .Values.collector.enabled }}
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "dash0edge.collectorName" . }}
+{{- end }}
+{{- if .Values.edgeProxy.enabled }}
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "dash0edge.proxyName" . }}
+{{- end }}
+{{- if .Values.edgeProxy.enabled }}
+
+* Confirm the Edge Proxy reached Dash0. Readiness is gated on the connection to
+  the Decision-Maker, so a pod that never becomes Ready means the token, the
+  region or your egress rules are wrong. Read ITS logs, not the collector's:
+
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dash0edge.proxyName" . }} --tail=50
+{{- end }}
+{{- if .Values.collector.enabled }}
+
+* Confirm the collector is in Edge Proxy mode and stamping the edge marker.
+  Both lines must appear:
+
+     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dash0edge.collectorName" . }} \
+       | grep -E 'Subscribing to edge-proxy|Edge mode detected'
+
+  "Polling Dash0 API for settings" instead of the first line means
+  EDGE_PROXY_ENDPOINT did not reach the container.
+{{- else }}
+
+* The collector is disabled, so nothing is exporting to Dash0 yet. Add it with:
+
+     helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} -f <your-values.yaml>
+{{- end }}
+
+* Create at least one enabled sampling rule in dataset "{{ include "dash0edge.dataset" . }}".
+  Until one exists the collector sits in fallback and keeps everything, because
+  collector.sampling.fallbackSampleRatio is {{ .Values.collector.sampling.fallbackSampleRatio }}. That is deliberate: while
+  you are still setting rules up, no reduction is a visible symptom, whereas
+  the collector's own default of 0.01 keeps 1% and looks much like success.
+{{- if .Values.generator.enabled }}
+
+The load generator is ON. Stop the traffic without uninstalling:
+
+     kubectl -n {{ .Release.Namespace }} scale deploy/{{ include "dash0edge.generatorName" . }} --replicas=0
+{{- end }}
+{{- if and .Values.collector.enabled (not .Values.edgeProxy.enabled) }}
+
+WARNING: edgeProxy.enabled is false and the collector still points at
+  {{ include "dash0edge.edgeProxyEndpoint" . }}
+Set collector.edgeProxyEndpoint to a reachable Edge Proxy, or the collector
+receives no sampling rules and no organisation settings.
+{{- end }}
+{{- if include "dash0edge.namespaceMissingPSS" . }}
+
+ACTION REQUIRED: namespace {{ .Release.Namespace }} enforces no Pod Security
+Standard. The chart cannot ship a Namespace object (Helm writes its release
+Secret into the namespace before it applies any manifest), so this one step is
+yours. Both workloads are written to pass `restricted`; run this now:
+
+     kubectl label namespace {{ .Release.Namespace }} \
+       pod-security.kubernetes.io/enforce=restricted \
+       pod-security.kubernetes.io/enforce-version=latest \
+       pod-security.kubernetes.io/audit=restricted \
+       pod-security.kubernetes.io/warn=restricted
+
+Confirm it took:
+
+     kubectl get namespace {{ .Release.Namespace }} \
+       -o jsonpath='{.metadata.labels}' ; echo
+
+The kubectl install path applies these labels for you; the Helm path cannot.
+{{- end }}

@@ -1,0 +1,136 @@
+# =============================================================================
+# Optional NetworkPolicy for the Dash0 SignalControl namespace
+# =============================================================================
+# Apply only if your cluster runs a CNI that enforces NetworkPolicy (Calico,
+# Cilium, Antrea, ...). Smoke-test it before you depend on the install: a policy
+# that blocks the kubelet's probes takes the Edge Proxy down on liveness
+# failure, not merely out of the Service.
+#
+# Egress the two workloads need to reach outside the cluster:
+#
+#   dash0-edge-proxy      decision-maker.<region>.aws.dash0.com  TCP 443
+#                         api.<region>.aws.dash0.com             TCP 443
+#   dash0-edge-collector  ingress.<region>.aws.dash0.com         TCP 4317
+#   both, at image pull   ghcr.io                                TCP 443
+#                         pkg-containers.githubusercontent.com   TCP 443
+#
+# NetworkPolicy cannot match on DNS names, so the egress rules below are
+# port-scoped rather than host-scoped. If your security team needs host-level
+# control, put the list above into your egress proxy or firewall instead.
+# =============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: dash0-signal-control
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dash0-edge-proxy
+  namespace: dash0-signal-control
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-proxy
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The collectors' decision and settings streams.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dash0-edge-collector
+      ports:
+        - { protocol: TCP, port: 8011 }
+    # Kubelet probes originate from the node, not from a pod. Most CNIs exempt
+    # host-to-pod traffic, but some do not, and BOTH of this pod's probes are
+    # on 8011 - including liveness, so a blocked probe means CrashLoopBackOff
+    # rather than just NotReady. Uncomment and set your node CIDR if your CNI
+    # enforces host-to-pod.
+    # - from:
+    #     - ipBlock: { cidr: 10.0.0.0/16 }   # <- your node CIDR
+    #   ports:
+    #     - { protocol: TCP, port: 8011 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Decision-Maker and the Dash0 API.
+    - ports:
+        - { protocol: TCP, port: 443 }
+    # Its own telemetry, to the local collector.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dash0-edge-collector
+      ports:
+        - { protocol: TCP, port: 4317 }
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dash0-edge-collector
+  namespace: dash0-signal-control
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-collector
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # OTLP from your central collector. As shipped this admits every namespace.
+    # To narrow it, replace the empty selector below with one clause naming your
+    # central collector's namespace, plus one naming THIS release's namespace:
+    #
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: your-central-collector-ns
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: dash0-signal-control
+    #
+    # The second clause is not optional. The Edge Proxy exports its own
+    # telemetry to the collector, and so does the load generator; narrowing
+    # without it silently drops both, which takes
+    # dash0.edge_proxy.subscriber.count with it. Write the namespace out in
+    # full: kustomize rewrites the `namespace:` field of an object, never a
+    # namespaceSelector label value, so if you changed the namespace in
+    # kustomization.yaml you must change it here too.
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 4317 }
+        - { protocol: TCP, port: 4318 }
+    # Kubelet probes on 13133. Same caveat as above, but the consequence here is
+    # only NotReady.
+    # - from:
+    #     - ipBlock: { cidr: 10.0.0.0/16 }
+    #   ports:
+    #     - { protocol: TCP, port: 13133 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Dash0 OTLP ingress, plus its own self-telemetry to the same endpoint.
+    - ports:
+        - { protocol: TCP, port: 4317 }
+    # The Edge Proxy.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: dash0-edge-proxy
+      ports:
+        - { protocol: TCP, port: 8011 }

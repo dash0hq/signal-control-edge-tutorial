@@ -1,0 +1,18 @@
+{{- if and .Values.edgeProxy.enabled .Values.edgeProxy.podDisruptionBudget.enabled }}
+{{- /*
+maxUnavailable, not minAvailable. minAvailable 1 on a single replica Deployment
+blocks node drains permanently.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "dash0edge.proxyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.edgeProxy.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+{{- end }}

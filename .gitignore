@@ -1,0 +1,21 @@
+# Nothing here should ever be committed: every pattern below is a file that
+# holds a plaintext Dash0 auth token once you fill it in.
+
+# Helm values files. The docs have you write your token into one of these.
+my-values.yaml
+*-values.yaml
+values.local.yaml
+
+# kustomize inputs, from kubectl/base/. The .example files they are copied from
+# are committed and carry no credentials.
+dash0.env
+token.env
+
+# Rendered output and local scratch.
+*.tgz
+
+# IDE and editor state.
+.idea/
+.vscode/
+*.swp
+.DS_Store

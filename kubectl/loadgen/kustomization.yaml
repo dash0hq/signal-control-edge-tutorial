@@ -1,0 +1,27 @@
+# =============================================================================
+# Optional synthetic load
+# =============================================================================
+# OFF by default. You only need this if nothing is sending telemetry to the edge
+# collector yet; normally your own central collector is the source.
+#
+#   kubectl apply -k loadgen          # base + one generator
+#   kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0
+#   kubectl -n dash0-signal-control delete deploy gen-checkout
+#
+# `kubectl delete -k loadgen` would remove the whole installation, not just the
+# generator. Use the explicit delete above.
+#
+# Composes with neither endpoints/ nor anything else: if you need explicit
+# endpoints AND the generator, apply `-k endpoints` then
+# `kubectl -n dash0-signal-control apply -f loadgen/telemetrygen.yaml`.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../base
+  - telemetrygen.yaml
+
+# Must match `namespace:` in base/kustomization.yaml. The base transformer does
+# not reach resources this overlay adds, so it is declared here too.
+namespace: dash0-signal-control

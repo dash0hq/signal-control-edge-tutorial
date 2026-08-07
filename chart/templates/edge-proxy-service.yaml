@@ -1,0 +1,26 @@
+{{- if .Values.edgeProxy.enabled }}
+{{- /*
+A plain ClusterIP, deliberately not headless and with no sessionAffinity. Each
+collector holds one long lived gRPC connection that pins to a single Edge Proxy
+pod for its lifetime; that is normal for gRPC. Balancing happens across the
+fleet, as many collectors spread their connections over the pods.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "dash0edge.proxyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+  ports:
+    - name: grpc
+      port: 8011
+      targetPort: grpc
+      protocol: TCP
+      appProtocol: grpc
+{{- end }}

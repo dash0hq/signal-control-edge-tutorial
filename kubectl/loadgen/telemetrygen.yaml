@@ -1,0 +1,110 @@
+# =============================================================================
+# Optional load generator
+# =============================================================================
+# Not part of the default install. Use it only when nothing is sending
+# telemetry to the edge collector yet:
+#
+#   kubectl apply -k loadgen
+#
+# ONE generator, deliberately. Every span is identical, the rate is fixed, and
+# the internal structure is known exactly, so each rule you add moves a number
+# you can predict in advance and check afterwards. A varied workload looks more
+# realistic and makes the arithmetic unverifiable.
+#
+# This file carries no namespace. It comes from `namespace:` in
+# loadgen/kustomization.yaml, which an overlay must declare for itself: a
+# `namespace:` set in base/ applies only to resources accumulated inside base/.
+# Keep that value in step with base/kustomization.yaml. The collector address
+# below is composed from $(POD_NAMESPACE) so it can never disagree with it.
+#
+# -----------------------------------------------------------------------------
+# WHAT IT EMITS
+# -----------------------------------------------------------------------------
+# 30 spans/s exactly. telemetrygen's --rate counts SPANS, not traces, so with
+# two child spans per trace that is 10 traces/s, and it names them predictably:
+#
+#   span name       kind     rate     share
+#   lets-go         CLIENT   10/s     1/3    (trace root)
+#   okey-dokey-0    SERVER   10/s     1/3
+#   okey-dokey-1    SERVER   10/s     1/3
+#   ------------------------------------------
+#   total                    30/s     1800/min
+#
+# All spans: service.name=checkout-service, POST /api/checkout, status Unset,
+# 100ms duration, resource k8s.cluster.name=signal-control-loadgen and
+# deployment.environment.name=test.
+#
+# Those three span names are what give you slices to target: a spam filter on
+# one of them and a signal-to-metrics rule on another do not interact, so each
+# rule moves exactly one number. ../docs/rules.md walks that through step by
+# step with the arithmetic.
+#
+# To stop the traffic without deleting anything:
+#   kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0
+#
+# To remove the generator but keep the installation:
+#   kubectl -n dash0-signal-control delete deploy gen-checkout
+#
+# There is deliberately no second, log-shaped generator. One telemetrygen cannot
+# vary severity, so a log rule would be all-or-nothing rather than fractional,
+# and traces make the point. The Helm chart ships the same single generator
+# behind `--set generator.enabled=true`.
+# =============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gen-checkout
+  labels:
+    app.kubernetes.io/component: loadgen
+    signal: traces
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: gen-checkout } }
+  template:
+    metadata: { labels: { app: gen-checkout, app.kubernetes.io/component: loadgen } }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.158.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # The kubelet expands $(VAR) in `args` from this container's env, so
+          # the generator always targets the collector in its own namespace.
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+          args:
+            - traces
+            - --otlp-endpoint=dash0-edge-collector.$(POD_NAMESPACE).svc.cluster.local:4317
+            - --otlp-insecure
+            - --duration=inf
+            # --rate is SPANS per second, not traces per second. With two child
+            # spans each trace is 3 spans, so 30 spans/s is 10 traces/s.
+            - --rate=30
+            - --child-spans=2
+            - --span-duration=100ms
+            - --service=checkout-service
+            - --status-code=Unset
+            # --otlp-attributes land on the RESOURCE. These two exist so the
+            # synthetic traffic is easy to tell apart from your real services.
+            - --otlp-attributes=k8s.cluster.name="signal-control-loadgen"
+            - --otlp-attributes=deployment.environment.name="test"
+            # --telemetry-attributes land on the SPAN. The two HTTP ones are not
+            # decoration: without them dash0operation cannot name the operation
+            # and every RED series collapses into a single "Unknown operation"
+            # bucket. The same happens to real traffic whose identifying
+            # attributes were stripped upstream.
+            - --telemetry-attributes=http.request.method="POST"
+            - --telemetry-attributes=http.route="/api/checkout"
+            - --telemetry-attributes=http.response.status_code=200
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "300m", memory: "128Mi" }

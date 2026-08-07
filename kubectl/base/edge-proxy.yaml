@@ -1,0 +1,208 @@
+# =============================================================================
+# Edge Proxy
+# =============================================================================
+# One connection out of your network for the whole collector fleet: the sampling
+# decision stream (gRPC to the Decision-Maker) and the organisation settings
+# feed (HTTPS to the Dash0 API).
+#
+# Nothing in this file needs editing. The four primitives come from dash0.env
+# and token.env via the generated ConfigMap and Secret, the namespace comes from
+# the downward API, and the endpoints are composed from them by the kubelet.
+#
+# The namespace is never written here. `namespace:` in kustomization.yaml
+# rewrites metadata.namespace but does NOT reach inside an env value, so a
+# hardcoded service address would survive `kubectl apply -k` into any other
+# namespace and quietly point at the wrong cluster-local Service.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash0-edge-proxy
+  labels:
+    app.kubernetes.io/name: dash0-edge-proxy
+    app.kubernetes.io/component: edge-proxy
+spec:
+  # Set explicitly. Never omit this expecting the HPA to supply it: applied
+  # without the HPA you silently get one replica, and a single Edge Proxy means
+  # every collector loses its decision stream together on any restart.
+  replicas: 3
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-proxy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dash0-edge-proxy
+        app.kubernetes.io/component: edge-proxy
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: dash0-edge-proxy
+      containers:
+        - name: edge-proxy
+          image: ghcr.io/dash0hq/edge-proxy:v2.0.2756
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+          ports:
+            - { name: grpc, containerPort: 8011, protocol: TCP }
+            - { name: internal, containerPort: 8012, protocol: TCP }
+          env:
+            # --- primitives, from the downward API ---------------------------
+            # The namespace this pod was applied into, composed into
+            # OTEL_EXPORTER_OTLP_ENDPOINT below.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: { fieldPath: metadata.namespace }
+            # --- primitives, from dash0.env and token.env --------------------
+            # ORDER MATTERS. The kubelet expands $(VAR) in a later entry's
+            # `value` using entries declared EARLIER in this same list. A
+            # forward reference is left as the literal text `$(NAME)`.
+            - name: DASH0_REGION
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_REGION }
+            - name: DASH0_DOMAIN
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_DOMAIN }
+            - name: DASH0_DATASET
+              valueFrom:
+                configMapKeyRef: { name: dash0-edge-settings, key: DASH0_DATASET }
+            - name: DASH0_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef: { name: dash0-edge-token, key: token }
+            # --- sampling decision stream ------------------------------------
+            - name: UPSTREAM_ADDRESS
+              value: "decision-maker.$(DASH0_REGION).$(DASH0_DOMAIN):443"
+            # Composed, not read from a Secret key. The token is substituted at
+            # pod start, so the rendered Deployment holds a reference and the
+            # Secret stays the only object with the credential in it.
+            - name: UPSTREAM_HEADERS
+              value: "authorization=Bearer $(DASH0_AUTH_TOKEN),Dash0-Dataset=$(DASH0_DATASET)"
+            # Enter fallback as soon as ANY upstream connection is lost, rather
+            # than the default of tolerating half of them being down. Decisions
+            # for traces routed to a missing upstream never arrive and those
+            # traces are quietly dropped. Failing loudly is the right trade.
+            - name: FALLBACKMINCONNECTEDRATIO
+              value: "1.0"
+            # --- organisation settings feed ----------------------------------
+            - name: UPSTREAM_EDGESETTINGS_ENABLED
+              value: "true"
+            - name: UPSTREAM_EDGESETTINGS_ADDRESS
+              value: "https://api.$(DASH0_REGION).$(DASH0_DOMAIN)"
+            # No dataset header: each rule carries its own dataset, so the
+            # poller fetches the whole organisation.
+            - name: UPSTREAM_EDGESETTINGS_HEADERS
+              value: "authorization=Bearer $(DASH0_AUTH_TOKEN)"
+            - name: UPSTREAM_EDGESETTINGS_REFRESHINTERVAL
+              value: "60s"
+            # --- server -------------------------------------------------------
+            - name: LISTENADDRESS
+              value: ":8011"
+            - name: LISTENADDRESSINTERNAL
+              value: ":8012"
+            - name: LOGLEVEL
+              value: "info"
+            # Keep in step with resources.limits.memory below (~90%).
+            - name: GOMEMLIMIT
+              value: "900MiB"
+            # --- its own telemetry, via the local collector --------------------
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://dash0-edge-collector.$(POD_NAMESPACE).svc.cluster.local:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+            - name: OTEL_SERVICE_NAME
+              value: "edge-proxy"
+          # Readiness is gated on the connection to the Dash0 Decision-Maker. A
+          # pod that never becomes Ready means the token, the region or your
+          # egress rules are wrong. Check its logs, not the collector's.
+          livenessProbe:
+            grpc: { port: 8011, service: liveness }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            grpc: { port: 8011, service: readiness }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Leave the Service endpoints before the process shuts down, so
+              # reconnecting collectors are not sent to a terminating pod.
+              exec: { command: ["/bin/sleep", "15"] }
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dash0-edge-proxy
+  labels:
+    app.kubernetes.io/name: dash0-edge-proxy
+spec:
+  # A plain ClusterIP, deliberately not headless and with no sessionAffinity.
+  # Each collector holds one long-lived gRPC connection pinned to a single Edge
+  # Proxy pod; that is normal for gRPC. Balancing happens across the fleet.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: dash0-edge-proxy
+  ports:
+    - { name: grpc, port: 8011, targetPort: grpc, protocol: TCP, appProtocol: grpc }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dash0-edge-proxy
+spec:
+  # maxUnavailable, not minAvailable. minAvailable: 1 on a single-replica
+  # Deployment blocks node drains permanently.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dash0-edge-proxy
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: dash0-edge-proxy
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: dash0-edge-proxy }
+  minReplicas: 3
+  maxReplicas: 8
+  # CPU only. A memory target would never fire: the process idles far below any
+  # sane percentage of its request.
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies: [{ type: Pods, value: 2, periodSeconds: 60 }]
+    scaleDown:
+      # Every pod removed forces its collectors to reconnect, so scale in slowly.
+      stabilizationWindowSeconds: 600
+      policies: [{ type: Pods, value: 1, periodSeconds: 300 }]

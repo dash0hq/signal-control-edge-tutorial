@@ -1,0 +1,377 @@
+# =============================================================================
+# Dash0 SignalControl edge collector
+# =============================================================================
+# Gateway-shaped OpenTelemetry Collector. Your central collector forwards OTLP
+# to this collector; this collector enriches, filters, derives metrics, tail
+# samples, and exports to Dash0.
+#
+# Image: ghcr.io/dash0hq/signal-control-collector:v2.0.2756
+#
+# TWO COPIES, KEEP THEM IN STEP. This repository holds this file twice, once per
+# install path:
+#
+#   chart/files/collector-config.yaml    read by the Helm chart
+#   kubectl/base/collector-config.yaml   read by the kustomize base
+#
+# They are identical except for one line, `max_recv_msg_size_mib`, which the
+# chart copy templates from .Values.collector.otlpMaxRecvMsgSizeMib. Edit both,
+# then run the check documented in chart/README.md and kubectl/README.md.
+#
+# Only ten values are parameterised, and every one of them is set explicitly
+# in the Deployment. Everything else is hardcoded on purpose: an unset
+# environment variable passes `otelcol validate` and then silently changes
+# behaviour at runtime, so the fewer of them there are, the better.
+#
+#   DASH0_DATASET                    dataset slug (used in three places)
+#   DASH0_AUTH_TOKEN                 auth_... token, from a Secret
+#   DASH0_OTLP_ENDPOINT              ingress.<region>.<domain>:4317
+#   EDGE_PROXY_ENDPOINT              <edge-proxy service>:8011
+#   SELF_SERVICE_INSTANCE_ID         pod name, via the downward API
+#   POD_NAMESPACE                    namespace, via the downward API
+#   RESERVOIR_MAX_MEMORY_BYTES       sampling buffer ceiling per pod
+#   RESERVOIR_BUFFER_DURATION        how long a trace waits for its decision
+#   SAMPLING_FALLBACK_SAMPLE_RATIO   what happens when rules are unavailable
+#   LOG_LEVEL
+# =============================================================================
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # This extension has three jobs, and it is required even if you never create
+  # a signal-to-metrics rule or a spam filter:
+  #
+  #  1. It is what makes dash0resource stamp the edge-origin marker on every
+  #     resource. Without the marker, Dash0 re-derives RED metrics and
+  #     signal-to-metrics server-side for the same spans, and every number
+  #     doubles. Confirm at startup with the log line
+  #     "Edge mode detected, will stamp resources with edge RED metrics marker".
+  #  2. It supplies the organisation settings that dash0signaltometrics and
+  #     dash0filter read. dash0signaltometrics refuses to start without it.
+  #  3. It subscribes to the Edge Proxy so one connection per site serves the
+  #     whole collector fleet, instead of every pod polling the Dash0 API.
+  #
+  # Setting proxy.address is what selects Edge Proxy mode. Startup log line:
+  # "Subscribing to edge-proxy for settings and log patterns". If you instead
+  # see "Polling Dash0 API for settings", EDGE_PROXY_ENDPOINT did not reach the
+  # container.
+  dash0settingsonedgeextension:
+    proxy:
+      address: ${env:EDGE_PROXY_ENDPOINT}
+      insecure: true            # plaintext gRPC inside the cluster
+    metric_level: basic
+
+  # Side channel carrying the SignalControl volume counters out of dash0filter.
+  # Paired 1:1 with the receiver of the same name below.
+  # max_stale must be strictly greater than flush_interval.
+  dash0metricrecorder:
+    queue_size: 2000
+    flush_interval: 15s
+    max_stale: 5m
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+        # The default is 4 MiB. A central collector batching on your behalf
+        # will exceed that; without this you get
+        # "grpc: received message larger than max".
+        max_recv_msg_size_mib: 16
+        keepalive:
+          server_parameters:
+            # Your central collector opens one long-lived gRPC connection per
+            # pod, and that connection pins to whichever collector replica the
+            # Service picked at connect time. Ageing connections out is what
+            # spreads load across replicas over time. Without this, one replica
+            # can carry all the traffic while the others idle.
+            max_connection_age: 5m
+            max_connection_age_grace: 30s
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Drains the metric recorder extension into a pipeline.
+  dash0metricrecorder:
+    metric_recorder: dash0metricrecorder
+
+processors:
+  memory_limiter:
+    check_interval: 2s
+    # Percentage of the container's memory limit. If the pod has no
+    # resources.limits.memory, this reads the whole node's RAM instead and the
+    # limiter never engages. Verify with the startup line
+    # "Using percentage memory limiter total_memory_mib=<N>" - N must match your
+    # container limit, not the node.
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  batch:
+    timeout: 1s
+    send_batch_size: 8192
+    send_batch_max_size: 16384
+
+  # Required by dash0filter, and it must run first.
+  #
+  # dash0filter looks up its rules by (organisation, dataset) read from resource
+  # attributes. Raw OTLP carries neither, and if either is missing the processor
+  # logs once and skips ALL filtering - it does not drop, it passes everything
+  # through. So a missing attribute reads as "the filter does not work", never
+  # as data loss.
+  #
+  # "edge" is a literal, not your organisation id. The edge settings provider
+  # keys everything by dataset and ignores the organisation entirely.
+  #
+  # Note this also stamps dash0.dataset, which takes precedence over the
+  # default_dataset field on dash0sampling below. Keep both the same value.
+  resource/signal_control_attributes:
+    attributes:
+      - key: dash0.org.technical.id
+        value: edge
+        action: upsert
+      - key: dash0.dataset
+        value: ${env:DASH0_DATASET}
+        action: upsert
+
+  # Computes dash0.resource.{hash,id,name,type} and stamps the edge-origin
+  # marker. It hashes EVERY resource attribute present when it runs, with no
+  # exclusion list, so it must be the LAST processor that touches resource
+  # attributes. Anything that adds, renames or removes one after this point
+  # leaves a hash that no longer describes the resource.
+  dash0resource: {}
+
+  # Computes dash0.operation.{name,type}. dash0redmetrics skips any span that
+  # is missing either attribute, so this processor must run before the
+  # connectors or those spans produce no RED metrics.
+  dash0operation:
+    prefer_span_name: false
+
+  # Spam filters. Runs after enrichment and before the RED / signal-to-metrics
+  # connectors, so filtered telemetry never inflates the derived metrics.
+  dash0filter:
+    cache_expiration: 60s
+    metric_recorder: dash0metricrecorder
+    # Skip any rule containing a negative operator (is_not, does_not_contain,
+    # is_not_set, ...). Negative operators are evaluated against attributes that
+    # may not be present at this point in the pipeline, which produces wrong
+    # matches. Positive-only is the safe default.
+    apply_positive_filters_only: true
+
+  dash0sampling:
+    decision_maker_endpoint: ${env:EDGE_PROXY_ENDPOINT}
+    decision_maker_insecure: true
+    decision_maker_headers:
+      Authorization: Bearer ${env:DASH0_AUTH_TOKEN}
+    organization_mode: single
+    # Must equal the dataset your sampling rules were created in AND the
+    # Dash0-Dataset export header below. If they disagree, the processor finds
+    # no rules for the lookup key and passes every span through, with only a
+    # debug-level log line to say so.
+    default_dataset: ${env:DASH0_DATASET}
+    enable_batching: true
+    max_batch_size: 500
+    max_batch_wait: 1s
+    decision_channel_max_size: 10000
+    eviction_channel_size: 10000
+    # What happens when sampling rules are not available - at startup, during a
+    # Dash0 connectivity blip, or when the dataset has no rules at all.
+    #
+    # The shipped default is 0.01, i.e. keep 1% and drop the rest. While you are
+    # still setting rules up that is the wrong failure mode: it looks identical
+    # to "working" while discarding 99% of the data. 1.0 means "keep everything
+    # until real rules arrive", so a rules problem shows up as no reduction
+    # rather than as missing data. Lower it once your rules are in place.
+    fallback_sample_ratio: ${env:SAMPLING_FALLBACK_SAMPLE_RATIO}
+    # Left at the default. Behind an Edge Proxy this knob is inert: the proxy
+    # always presents itself as a single upstream, so the ratio is always 1/1.
+    # The gate that matters is FALLBACKMINCONNECTEDRATIO on the Edge Proxy.
+    fallback_min_connected_ratio: 1.0
+    fallback_until_rules_received: true
+    debug: false
+
+    # Do not add metric_recorder here. In single-organisation mode the sampling
+    # processor has no organisation id, so the counters are rejected before they
+    # are recorded. Measure the reduction from the collector's own counters
+    # instead, which report it at the point where it happens:
+    #
+    #   otelcol_receiver_accepted_spans                    in, before any rule
+    #   dash0.red_metrics_connector.spans_consumed         after spam filters
+    #   otelcol_exporter_sent_spans                        stored, after sampling
+
+    reservoir:
+      # serialized_memory needs no volume. The default is `disk`, which requires
+      # a data_dir and a writable mount.
+      type: serialized_memory
+      max_memory_bytes: ${env:RESERVOIR_MAX_MEMORY_BYTES}
+      # How long a trace waits for its sampling decision. The clock starts when
+      # the trace's FIRST span arrives and is never extended, so any latency
+      # your central collector adds (its batch timeout, its queue) is subtracted
+      # from this budget. Too short and you get partial traces, visible as
+      # dash0.trace_reservoir.watch_expirations.
+      buffer_duration: ${env:RESERVOIR_BUFFER_DURATION}
+      shard_count: 128
+      ingest_channel_size: 10000
+      eviction_scan_send_timeout: 1s
+      # detailed is deliberate. It is what emits watch_expirations and
+      # watch_channel_overflow, the two counters that detect spans arriving
+      # after their trace's buffer window closed. Those are the failure mode
+      # this topology is most exposed to.
+      metric_level: detailed
+
+connectors:
+  forward/traces-to-sampling: {}
+
+  # RED metrics: rate, errors and duration histograms derived from 100% of
+  # spans. Wired as an EXPORTER of the pre-sampling pipeline so it sees every
+  # span before sampling removes any. This is what keeps dashboards and alerts
+  # accurate while you store only a fraction of the traces.
+  dash0redmetrics:
+    metrics_flush_interval: 30s
+    max_time_series: 20000
+
+  # Signal to metrics. Also on the pre-sampling exporter list, and on the logs
+  # pipeline. Rules come from the Dash0 API via the settings extension.
+  dash0signaltometrics:
+    default_dataset: ${env:DASH0_DATASET}
+    metrics_flush_interval: 30s
+    max_time_series: 30000
+    cache_expiration: 60s
+    metric_level: basic
+
+exporters:
+  otlp_grpc/dash0:
+    endpoint: ${env:DASH0_OTLP_ENDPOINT}
+    headers:
+      Authorization: Bearer ${env:DASH0_AUTH_TOKEN}
+      Dash0-Dataset: ${env:DASH0_DATASET}
+    timeout: 30s
+    sending_queue:
+      enabled: true
+      queue_size: 2000
+      num_consumers: 10
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  extensions:
+    - health_check
+    - dash0settingsonedgeextension
+    - dash0metricrecorder
+
+  telemetry:
+    resource:
+      attributes:
+        - name: service.name
+          value: dash0-edge-collector
+        # The namespace this pod runs in, from the downward API, and not
+        # templated. Hardcoding it would mislabel every self-telemetry series
+        # the moment this is installed into a differently named namespace, and
+        # the downward API is the one mechanism both install paths share:
+        # kustomize's `namespace:` transformer does not reach inside ConfigMap
+        # data, so a templated value here would have no kustomize equivalent.
+        - name: service.namespace
+          value: ${env:POD_NAMESPACE}
+        # Must be unique per replica or all pods write to one time series and
+        # the delta counters collide. Supplied from metadata.name.
+        - name: service.instance.id
+          value: ${env:SELF_SERVICE_INSTANCE_ID}
+    logs:
+      level: ${env:LOG_LEVEL}
+      encoding: json
+    metrics:
+      level: normal
+      readers:
+        - periodic:
+            # Milliseconds, not a duration string.
+            interval: 15000
+            exporter:
+              # This block uses an older schema than the exporters section
+              # above: `otlp` with a `protocol` field, NOT `otlp_grpc`. Writing
+              # otlp_grpc here makes the collector panic at startup.
+              #
+              # Exported straight to Dash0 rather than looped back through this
+              # collector's own OTLP receiver. Direct export shuts down cleanly
+              # (a loopback cannot flush once the receiver has stopped, which
+              # adds ten seconds and a non-zero exit code to every pod
+              # termination) and keeps the collector's own telemetry out of
+              # dash0filter, so a spam-filter rule can never drop it.
+              # These metrics land in DASH0_DATASET.
+              otlp:
+                protocol: grpc
+                endpoint: https://${env:DASH0_OTLP_ENDPOINT}
+                # Headers here are a LIST of name/value pairs, not a map. A map
+                # is the older schema: it still works, but the collector warns
+                # on every start and the format is on its way out.
+                headers:
+                  - name: Authorization
+                    value: Bearer ${env:DASH0_AUTH_TOKEN}
+                  - name: Dash0-Dataset
+                    value: ${env:DASH0_DATASET}
+                temporality_preference: delta
+
+  pipelines:
+    # ---- TRACES -------------------------------------------------------------
+    # The connectors sit on the EXPORTERS list here, and a forward connector
+    # hands a copy of the same spans to the sampling pipeline. That split is
+    # what makes RED metrics accurate: the sampling processor removes spans in
+    # place, so anything downstream of it counts only what survived.
+    traces/pre-sampling:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resource/signal_control_attributes
+        - dash0resource
+        - dash0operation
+        - dash0filter
+      exporters:
+        - dash0redmetrics
+        - dash0signaltometrics
+        - forward/traces-to-sampling
+
+    traces/sampled:
+      receivers: [forward/traces-to-sampling]
+      processors:
+        - dash0sampling
+        - batch
+      exporters: [otlp_grpc/dash0]
+
+    # ---- METRICS ------------------------------------------------------------
+    metrics/derived:
+      receivers: [dash0redmetrics, dash0signaltometrics]
+      processors: [batch]
+      exporters: [otlp_grpc/dash0]
+
+    # Metrics forwarded by your central collector. No dash0resource here:
+    # nothing derives metrics from metrics, so the edge-origin marker is
+    # irrelevant on this path.
+    metrics/passthrough:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resource/signal_control_attributes
+        - dash0filter
+        - batch
+      exporters: [otlp_grpc/dash0]
+
+    metrics/signal-control-counters:
+      receivers: [dash0metricrecorder]
+      processors: [batch]
+      exporters: [otlp_grpc/dash0]
+
+    # ---- LOGS ---------------------------------------------------------------
+    # dash0resource IS needed here, because signal-to-metrics runs on logs and
+    # Dash0 would otherwise derive the same log metrics a second time
+    # server-side.
+    logs/passthrough:
+      receivers: [otlp]
+      processors:
+        - memory_limiter
+        - resource/signal_control_attributes
+        - dash0resource
+        - dash0filter
+        - batch
+      exporters:
+        - otlp_grpc/dash0
+        - dash0signaltometrics

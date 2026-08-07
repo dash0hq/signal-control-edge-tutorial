@@ -1,0 +1,38 @@
+apiVersion: v2
+name: dash0-signal-control-edge
+description: Dash0 SignalControl on the edge. An Edge Proxy plus a gateway OpenTelemetry Collector that enriches, spam filters, derives RED and custom metrics from 100% of the signal, tail samples, and exports what survives to Dash0.
+type: application
+
+# Chart version. Bump on any chart change.
+version: 0.1.0
+
+# The Dash0 SignalControl release the default images point at. Both container
+# images are tagged with this value.
+appVersion: "v2.0.2756"
+
+keywords:
+  - dash0
+  - signal-control
+  - observability
+  - opentelemetry
+  - otel-collector
+  - tail-sampling
+  - red-metrics
+  - edge-proxy
+
+home: https://www.dash0.com
+icon: https://www.dash0.com/favicon.ico
+sources:
+  - https://github.com/dash0hq/signal-control-edge-tutorial
+
+maintainers:
+  - name: Dash0
+    url: https://www.dash0.com
+
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/images: |
+    - name: edge-proxy
+      image: ghcr.io/dash0hq/edge-proxy:v2.0.2756
+    - name: signal-control-collector
+      image: ghcr.io/dash0hq/signal-control-collector:v2.0.2756

@@ -1,0 +1,173 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+NetworkPolicy cannot match on DNS names, so the egress rules below are port
+scoped rather than host scoped. If your security team needs host level control,
+put these hosts into your egress proxy or firewall instead:
+
+  edge-proxy   decision-maker.<region>.<domain>  TCP 443
+               api.<region>.<domain>             TCP 443
+  collector    ingress.<region>.<domain>         TCP 4317
+  both, at image pull   ghcr.io                  TCP 443
+                        pkg-containers.githubusercontent.com  TCP 443
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+{{- if .Values.edgeProxy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dash0edge.proxyName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # The collectors' decision and settings streams.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+      ports:
+        - { protocol: TCP, port: 8011 }
+    {{- with .Values.networkPolicy.nodeCIDRs }}
+    # Kubelet probes originate from the node, not from a pod. BOTH of this
+    # pod's probes are on 8011, including liveness, so a blocked probe means
+    # CrashLoopBackOff rather than just NotReady.
+    - from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 8011 }
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Decision-Maker and the Dash0 API.
+    - ports:
+        - { protocol: TCP, port: 443 }
+    {{- if .Values.collector.enabled }}
+    # Its own telemetry, to the local collector.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+      ports:
+        - { protocol: TCP, port: 4317 }
+    {{- end }}
+{{- end }}
+{{- if .Values.collector.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dash0edge.collectorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # OTLP from your central collector.
+    - from:
+        {{- if .Values.networkPolicy.otlpClientNamespaces }}
+        {{- range .Values.networkPolicy.otlpClientNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+        {{- end }}
+        # Always admit this namespace as well. The Edge Proxy exports its own
+        # telemetry to the collector, and so does the optional load generator;
+        # narrowing the list without this clause silently drops both, which
+        # takes dash0.edge_proxy.subscriber.count with it.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 4317 }
+        - { protocol: TCP, port: 4318 }
+    {{- with .Values.networkPolicy.nodeCIDRs }}
+    # Kubelet probes on 13133. Same caveat as the Edge Proxy, but the
+    # consequence here is only NotReady.
+    - from:
+        {{- range . }}
+        - ipBlock: { cidr: {{ . | quote }} }
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 13133 }
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Dash0 OTLP ingress, plus its own self telemetry to the same endpoint.
+    - ports:
+        - { protocol: TCP, port: 4317 }
+    {{- if .Values.edgeProxy.enabled }}
+    # The Edge Proxy.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+      ports:
+        - { protocol: TCP, port: 8011 }
+    {{- end }}
+{{- end }}
+{{- if .Values.generator.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "dash0edge.generatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "dash0edge.generatorName" . }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+      ports:
+        - { protocol: TCP, port: 4317 }
+{{- end }}
+{{- end }}

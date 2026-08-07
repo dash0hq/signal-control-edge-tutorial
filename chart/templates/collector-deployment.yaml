@@ -1,0 +1,177 @@
+{{- if .Values.collector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dash0edge.collectorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+    app.kubernetes.io/component: collector
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  {{- /*
+  No HorizontalPodAutoscaler on the collector. Every pod that goes away loses
+  the traces currently buffered in its sampling reservoir, so autoscaling trades
+  a little CPU for a steady trickle of incomplete traces.
+  */}}
+  replicas: {{ .Values.collector.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+        app.kubernetes.io/component: collector
+        {{- include "dash0edge.commonLabels" . | nindent 8 }}
+      annotations:
+        {{- /* Roll the pods whenever the rendered config or the token changes. */}}
+        checksum/config: {{ include "dash0edge.collectorConfig" . | sha256sum }}
+        {{- if include "dash0edge.createSecret" . }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.collector.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+      {{- with .Values.collector.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: {{ include "dash0edge.collectorImage" . | quote }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          {{- /*
+          Run the binary directly instead of through the image's default shell
+          wrapper. The wrapper does not forward SIGTERM, so without this every
+          pod termination waits out the full grace period and is then killed,
+          turning a three replica rollout into several minutes.
+          */}}
+          command: ["/otelcol"]
+          args: ["--config", "/etc/otelcol/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          ports:
+            - { name: otlp-grpc, containerPort: 4317, protocol: TCP }
+            - { name: otlp-http, containerPort: 4318, protocol: TCP }
+            - { name: health, containerPort: 13133, protocol: TCP }
+          {{- /*
+          These ten values are the entire parameter surface of the collector
+          config. Everything else in it is hardcoded on purpose: an unset
+          environment variable passes `otelcol validate` and then silently
+          changes behaviour at runtime.
+          */}}
+          env:
+            {{- /*
+            Read by the config as ${env:POD_NAMESPACE} for the self telemetry
+            service.namespace. Taken from the downward API rather than
+            .Release.Namespace so files/collector-config.yaml stays identical to
+            the kubectl copy, which has no templating available at all.
+            */}}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: EDGE_PROXY_ENDPOINT
+              value: {{ include "dash0edge.edgeProxyEndpoint" . | quote }}
+            - name: DASH0_OTLP_ENDPOINT
+              value: {{ include "dash0edge.otlpEndpoint" . | quote }}
+            - name: DASH0_DATASET
+              value: {{ include "dash0edge.dataset" . | quote }}
+            - name: DASH0_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dash0edge.tokenSecretName" . }}
+                  key: {{ include "dash0edge.tokenSecretKey" . }}
+            {{- /*
+            Must be unique per pod, or all replicas write their self telemetry
+            to one time series and the numbers you read back are wrong.
+            */}}
+            - name: SELF_SERVICE_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: RESERVOIR_MAX_MEMORY_BYTES
+              value: {{ .Values.collector.reservoir.maxMemoryBytes | quote }}
+            - name: RESERVOIR_BUFFER_DURATION
+              value: {{ .Values.collector.reservoir.bufferDuration | quote }}
+            - name: SAMPLING_FALLBACK_SAMPLE_RATIO
+              value: {{ .Values.collector.sampling.fallbackSampleRatio | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.collector.logLevel | quote }}
+            - name: GOMEMLIMIT
+              value: {{ .Values.collector.gomemlimit | quote }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/otelcol, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+          {{- /*
+          These probes only tell you the process is running. They stay green
+          while the Edge Proxy is unreachable and while every export is failing.
+          Do not read them as "sampling is working".
+          */}}
+          livenessProbe:
+            httpGet: { path: /, port: health }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /, port: health }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              {{- /*
+              Leave the Service endpoints before shutting down, so your central
+              collector is not still exporting to a terminating pod. This does
+              not save the buffered traces: whatever is in the sampling
+              reservoir when a pod stops is lost, so roll the collector when
+              traffic is low.
+              */}}
+              exec:
+                command: ["/bin/sleep", "10"]
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "dash0edge.collectorName" . }}-config
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 16Mi }
+{{- end }}

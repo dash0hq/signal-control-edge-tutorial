@@ -1,0 +1,82 @@
+{{- if .Values.generator.enabled }}
+{{- /*
+Optional load generator, off by default. Only for a cluster with no real
+traffic yet. One generator, deliberately: every span is identical and the rate
+is fixed, so each rule you add moves a number you can predict in advance.
+
+  span name       kind     share
+  lets-go         CLIENT   1/3    (trace root)
+  okey-dokey-0    SERVER   1/3
+  okey-dokey-1    SERVER   1/3
+
+Stop the traffic without uninstalling:
+  kubectl -n <namespace> scale deploy/gen-checkout --replicas=0
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dash0edge.generatorName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "dash0edge.generatorName" . }}
+    app.kubernetes.io/component: loadgen
+    signal: traces
+    {{- include "dash0edge.commonLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "dash0edge.generatorName" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "dash0edge.generatorName" . }}
+        app.kubernetes.io/component: loadgen
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: telemetrygen
+          image: "{{ .Values.generator.image.repository }}:{{ .Values.generator.image.tag }}"
+          imagePullPolicy: {{ .Values.generator.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          args:
+            - traces
+            - --otlp-endpoint={{ include "dash0edge.collectorEndpoint" . }}
+            - --otlp-insecure
+            - --duration=inf
+            {{- /*
+            --rate is SPANS per second, not traces per second. With two child
+            spans each trace is 3 spans, so 30 spans/s is 10 traces/s.
+            */}}
+            - --rate={{ .Values.generator.rate }}
+            - --child-spans={{ .Values.generator.childSpans }}
+            - --span-duration={{ .Values.generator.spanDuration }}
+            - --service={{ .Values.generator.service }}
+            - --status-code=Unset
+            {{- /*
+            --otlp-attributes land on the RESOURCE. These two exist so the
+            synthetic traffic is easy to tell apart from your real services.
+            */}}
+            - --otlp-attributes=k8s.cluster.name="{{ .Values.generator.clusterName }}"
+            - --otlp-attributes=deployment.environment.name="{{ .Values.generator.environmentName }}"
+            {{- /*
+            --telemetry-attributes land on the SPAN. The two HTTP ones are not
+            decoration: without them dash0operation cannot name the operation
+            and every RED series collapses into a single "Unknown operation"
+            bucket. The same happens to real traffic whose identifying
+            attributes were stripped upstream.
+            */}}
+            - --telemetry-attributes=http.request.method="{{ .Values.generator.httpMethod }}"
+            - --telemetry-attributes=http.route="{{ .Values.generator.httpRoute }}"
+            - --telemetry-attributes=http.response.status_code=200
+          resources:
+            {{- toYaml .Values.generator.resources | nindent 12 }}
+{{- end }}

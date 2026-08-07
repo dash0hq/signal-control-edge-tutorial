@@ -1,0 +1,5 @@
+# Filled in by the person installing. Never commit either. The root .gitignore
+# covers both as well; this file is here so the guarantee survives copying this
+# directory somewhere else.
+dash0.env
+token.env

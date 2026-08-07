@@ -1,0 +1,278 @@
+# =============================================================================
+# Dash0 SignalControl on the edge
+# =============================================================================
+# Three values decide the install: dash0.dataset, dash0.token.value and
+# dash0.region. Region already defaults to eu-west-1, so in practice you fill in
+# two. Everything below them has a working default and you can ignore it.
+#
+#   helm install signal-control-edge ./chart \
+#     --namespace dash0-signal-control --create-namespace \
+#     --set dash0.dataset=my-dataset \
+#     --set dash0.token.value=auth_xxxxxxxx
+#
+# The full procedure is in ../docs/install-helm.md.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Dash0 connection. This is the whole of what you normally edit.
+# -----------------------------------------------------------------------------
+dash0:
+  # Your Dash0 region. Visible in the URL of your Dash0 organisation.
+  region: eu-west-1
+
+  # The Dash0 environment your organisation lives in. Change this only if Dash0
+  # gives you a different domain.
+  #
+  # region and domain together produce all three endpoints:
+  #   api             https://api.<region>.<domain>
+  #   otlp ingress    ingress.<region>.<domain>:4317
+  #   decision maker  decision-maker.<region>.<domain>:443
+  domain: aws.dash0.com
+
+  # REQUIRED. The dataset slug telemetry is written to. It must already exist
+  # in Dash0, and your sampling rules and spam filters must live in it, because
+  # rules are looked up by dataset. Install fails with a clear message if unset.
+  dataset: ""
+
+  # REQUIRED. A Dash0 auth token (starts with auth_). The same token serves the
+  # sampling decision stream, the settings feed and the OTLP export.
+  token:
+    # Plain value. The chart puts it in a Secret it owns and never renders it
+    # into a Deployment; the containers compose their header strings from a
+    # secretKeyRef at pod start.
+    value: ""
+    # Alternative to value: the name of a Secret you created yourself. When set,
+    # value is ignored and the chart creates no Secret.
+    existingSecret: ""
+    # The key inside existingSecret that holds the raw token.
+    existingSecretKey: token
+
+  # Optional explicit endpoint overrides. Each one, when non empty, wins over
+  # the region plus domain derivation above. Use these for a private link, a
+  # proxy of your own, or an environment that does not follow the pattern.
+  endpoints:
+    # Dash0 API, used by the Edge Proxy settings feed. Include the scheme.
+    api: ""
+    # Dash0 OTLP gRPC ingress, host:port, no scheme.
+    otlpIngress: ""
+    # Dash0 Decision-Maker, host:port, no scheme.
+    decisionMaker: ""
+
+# -----------------------------------------------------------------------------
+# Namespace
+# -----------------------------------------------------------------------------
+# The chart does NOT ship a Namespace object. Helm writes its own release
+# metadata into the target namespace before it applies any manifest, so a
+# Namespace inside the chart cannot bootstrap itself, and --create-namespace
+# then collides with it. Pass --create-namespace, or pre-create the namespace
+# with the restricted Pod Security Standard labels (see the chart README).
+# Both workloads are written to pass `restricted` either way.
+#
+# Because of that, labelling the namespace for Pod Security Standards is a
+# REQUIRED post-install step on this path, not optional hardening: unlike the
+# kubectl path, the chart cannot do it for you. `helm install` prints the exact
+# command when it finds the namespace unlabelled.
+namespace:
+  # Refuse to install into `default`, where every documented command would then
+  # be wrong and `helm uninstall` cleanup gets messy. Set to true only if you
+  # really mean to install into `default`.
+  allowDefault: false
+
+# -----------------------------------------------------------------------------
+# Edge Proxy
+# -----------------------------------------------------------------------------
+# One connection out of your network for the whole collector fleet, carrying
+# both the sampling decision stream and the organisation settings feed.
+edgeProxy:
+  enabled: true
+
+  # Always set explicitly. A single Edge Proxy means every collector loses its
+  # decision stream at the same moment on any restart, rollout or node drain.
+  replicaCount: 3
+
+  image:
+    repository: ghcr.io/dash0hq/edge-proxy
+    tag: ""          # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+  resources:
+    # Memory grows with the number of connected collectors and their per
+    # subscriber buffers. Idle usage is tens of megabytes; these are generous
+    # headroom, not a measured working set.
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Go soft memory limit. Keep at roughly 90% of resources.limits.memory.
+  gomemlimit: 900MiB
+
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 8
+    # CPU only. A memory target would never fire: the process idles far below
+    # any sane percentage of its request, so it would only be noise.
+    targetCPUUtilizationPercentage: 70
+    # Every pod removed forces its collectors to reconnect, so scale in slowly.
+    scaleDownStabilizationWindowSeconds: 600
+
+  podDisruptionBudget:
+    enabled: true
+    # maxUnavailable, never minAvailable. minAvailable 1 on a single replica
+    # Deployment blocks node drains permanently.
+    maxUnavailable: 1
+
+  # trace, debug, info, warn, error
+  logLevel: info
+  # Verbose per request logging at the network edges. Very noisy; troubleshooting only.
+  debug: false
+
+  # How often the settings feed is refreshed from the Dash0 API.
+  # The Edge Proxy rejects anything outside 10s to 1h.
+  settingsRefreshInterval: 60s
+
+  # Enter fallback as soon as any upstream connection is lost, rather than the
+  # default of tolerating half of them being down. When an upstream is missing,
+  # decisions for the traces routed to it never arrive and those traces are
+  # quietly dropped by the collectors. Failing loudly is the right trade here.
+  fallbackMinConnectedRatio: "1.0"
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Edge collector
+# -----------------------------------------------------------------------------
+# The gateway your central collector exports OTLP to. Enriches, spam filters,
+# derives RED and signal-to-metrics, tail samples, exports to Dash0.
+collector:
+  enabled: true
+
+  # There is deliberately no autoscaler on the collector. Every pod that goes
+  # away loses the traces buffered in its sampling reservoir, so autoscaling
+  # trades a little CPU for a steady trickle of incomplete traces. Pick a fixed
+  # replica count and change it deliberately.
+  replicaCount: 3
+
+  image:
+    repository: ghcr.io/dash0hq/signal-control-collector
+    tag: ""          # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+
+  resources:
+    # The memory request sits close to the limit on purpose: the sampling
+    # reservoir is a real in process allocation that fills under load, so a
+    # small request invites the scheduler to overcommit the node.
+    requests:
+      cpu: 500m
+      memory: 3Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  # Go soft memory limit. Keep at roughly 85% of resources.limits.memory.
+  gomemlimit: 3400MiB
+
+  service:
+    # This Service is the address your central collector exports to:
+    #   dash0-edge-collector.<namespace>.svc.cluster.local:4317
+    type: ClusterIP
+
+  reservoir:
+    # Sampling buffer ceiling per pod. Keep comfortably below
+    # resources.limits.memory; the rest is pipeline and export overhead.
+    maxMemoryBytes: "2147483648"   # 2 GiB
+    # How long a trace waits for its sampling decision. The clock starts when
+    # the trace's first span arrives and is never extended, so any latency your
+    # central collector adds is subtracted from this budget.
+    bufferDuration: 30s
+
+  sampling:
+    # What happens when sampling rules are not available: at startup, during a
+    # connectivity blip, or when the dataset has no rules at all.
+    #
+    # The collector's own default is 0.01, which keeps 1%. While you are still
+    # setting rules up that is hard to tell apart from a working install, so
+    # this chart ships 1.0: keep everything until real rules arrive, and a
+    # dataset with no rules yet shows up as no reduction rather than as 1% of
+    # your data. Lower it once your rules are in place.
+    fallbackSampleRatio: "1.0"
+
+  logLevel: info
+
+  # gRPC receive limit. The collector default is 4 MiB, which a central
+  # collector batching on your behalf will exceed.
+  otlpMaxRecvMsgSizeMib: 16
+
+  # Where the collector reaches the Edge Proxy, for both sampling decisions and
+  # settings. Empty means the Edge Proxy Service this chart creates. Set it only
+  # if you run the Edge Proxy elsewhere, or if edgeProxy.enabled is false.
+  edgeProxyEndpoint: ""
+
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Load generator (off by default)
+# -----------------------------------------------------------------------------
+# Only for a cluster with no real traffic yet. If you already have a collector
+# producing signals, leave this off and point it at the collector Service.
+#
+# One generator, deliberately: every span is identical and the rate is fixed, so
+# each rule you add moves a number you can predict in advance.
+# --rate counts SPANS, not traces. With childSpans 2 each trace is 3 spans, so
+# rate 30 is 10 traces/s.
+generator:
+  enabled: false
+  image:
+    repository: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen
+    tag: v0.158.0
+    pullPolicy: IfNotPresent
+  rate: 30
+  childSpans: 2
+  service: checkout-service
+  # The two HTTP attributes are not decoration. Without them dash0operation
+  # cannot name the operation and every RED series collapses into a single
+  # "Unknown operation" bucket.
+  httpMethod: POST
+  httpRoute: /api/checkout
+  spanDuration: 100ms
+  # Resource attributes on the synthetic traffic, so it is easy to tell apart
+  # from your real services.
+  clusterName: signal-control-loadgen
+  environmentName: test
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 300m
+      memory: 128Mi
+
+# -----------------------------------------------------------------------------
+# NetworkPolicy (off by default)
+# -----------------------------------------------------------------------------
+networkPolicy:
+  # Apply only if your cluster runs a CNI that enforces NetworkPolicy, and give
+  # it a smoke test before you depend on the install: a policy that blocks the
+  # kubelet's probes takes the Edge Proxy down on liveness failure, not merely
+  # out of the Service.
+  enabled: false
+  # Most CNIs exempt host to pod traffic, so kubelet probes pass. Some do not,
+  # and both Edge Proxy probes are on 8011 including liveness, so a blocked
+  # probe means CrashLoopBackOff. List your node CIDRs here if that applies.
+  nodeCIDRs: []
+  # Namespaces allowed to send OTLP to the collector. Empty means any namespace
+  # in the cluster. Narrow this to where your central collector runs.
+  otlpClientNamespaces: []
