@@ -4,8 +4,7 @@ Installs Dash0 SignalControl on the edge: an Edge Proxy and a gateway OpenTeleme
 one namespace, from the kustomize tree in [`kubectl/`](../kubectl/). For clusters without Helm.
 
 Same workloads, same collector configuration and same parameters as
-[install-helm.md](install-helm.md), driven by two `.env` files. No YAML in that directory is edited
-and nothing needs `sed`.
+[install-helm.md](install-helm.md), driven by two `.env` files.
 
 ## Before you start
 
