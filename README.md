@@ -15,22 +15,22 @@ Nothing in front of your central collector changes.
 ```mermaid
 flowchart LR
   apps["your apps"]
-  central["your central<br/>OTel collector"]
-  existing["your existing<br/>destinations"]
-  ingress["Dash0 ingress<br/>:4317"]
-  control["Dash0 decision-maker<br/>and settings API<br/>:443"]
+  central["your central\nOTel collector"]
+  existing["your existing\ndestinations"]
+  ingress["Dash0 ingress\n:4317"]
+  control["Dash0 decision-maker\nand settings API\n:443"]
 
   subgraph edge["installed by this tutorial, one namespace"]
     direction TB
-    coll["edge collector<br/>enrich, spam filter, RED and<br/>custom metrics, tail sample"]
-    proxy["Edge Proxy<br/>one outbound connection<br/>for the whole fleet"]
+    coll["edge collector\nenrich, spam filter, RED and\ncustom metrics, tail sample"]
+    proxy["Edge Proxy\none outbound connection\nfor the whole fleet"]
   end
 
   apps --> central
   central --> existing
   central -- "OTLP" --> coll
   coll -- "OTLP/TLS" --> ingress
-  coll <-. "gRPC :8011<br/>decisions and rules" .-> proxy
+  coll <-. "gRPC :8011\ndecisions and rules" .-> proxy
   proxy <-. "TLS" .-> control
 ```
 
