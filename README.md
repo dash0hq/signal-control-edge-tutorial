@@ -56,8 +56,8 @@ Two paths. Same two workloads, same collector configuration, same parameters. Pi
 | Helm chart, in [`chart/`](chart/)    | You have Helm | [docs/install-helm.md](docs/install-helm.md)       |
 | kustomize, in [`kubectl/`](kubectl/) | You do not    | [docs/install-kubectl.md](docs/install-kubectl.md) |
 
-Both paths begin by creating the dataset and one baseline sampling rule, before anything is
-deployed. A dataset with no rules leaves the collector in fallback.
+Both paths begin by creating the dataset, before anything is deployed. Sampling rules are not a
+prerequisite: until you create one you keep 100% of your traces, which is the right way to start.
 
 ## Then
 

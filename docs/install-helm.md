@@ -24,15 +24,10 @@ the same two workloads and read the same collector configuration.
 > **`authentication token is not authorized to ingest into dataset "..."` while every pod stays**
 > **Ready.** Check the token's scope before you check anything else.
 
-## Step 1. Create the dataset and one baseline sampling rule
+## Step 1. Create the dataset
 
-Do this before you deploy anything.
-
-> **A dataset with no sampling rules never receives a rule message at all, so the collector stays in
-> fallback permanently.**
-
-The chart sets that fallback to keep everything (`collector.sampling.fallbackSampleRatio: "1.0"`), so
-the state reads as "no reduction" rather than as missing data. Create a rule anyway:
+Do this before you deploy anything. The dataset must already exist in Dash0: telemetry sent to a
+dataset that does not exist is accepted, but you cannot attach rules to it afterwards.
 
 ```bash
 export DASH0_API_URL="https://api.eu-west-1.aws.dash0.com"   # your region
@@ -43,18 +38,11 @@ export DASH0_TOKEN="auth_..."
 curl -sS -o /dev/null -w '%{http_code}\n' \
   "${DASH0_API_URL}/api/sampling-rules?dataset=${DASH0_DATASET}" \
   -H "Authorization: Bearer ${DASH0_TOKEN}"
-
-curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
-  "kind": "Dash0Sampling",
-  "metadata": { "name": "baseline-5-percent", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "baseline-5-percent" } },
-  "spec": { "enabled": true, "display": { "name": "Baseline 5%" },
-    "conditions": { "kind": "probabilistic", "spec": { "rate": 0.05 } } }}'
 ```
 
-> **Sampling-rule creation reads the dataset only from `metadata.labels["dash0.com/dataset"]`, so a
-> `?dataset=` query parameter is ignored here and the rule lands in `default`.**
+You do **not** need a sampling rule to install. Until one exists in your dataset nothing is sampled
+and you keep 100% of your traces, which is the right starting point: get telemetry flowing first,
+confirm it in Dash0, then add rules from [docs/rules.md](rules.md) when you want reduction.
 
 ## Step 2. Write your values
 

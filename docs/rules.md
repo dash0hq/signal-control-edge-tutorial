@@ -136,9 +136,23 @@ curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
 > **Sampling-rule creation reads the dataset only from `metadata.labels["dash0.com/dataset"]`, so a
 > `?dataset=` query parameter is ignored on this endpoint and the rule lands in `default`.**
 
-A dataset with no sampling rules never receives a rule message at all, so the collector stays in
-fallback permanently. Both install paths therefore have you create one baseline probabilistic rule
-before deploying. Keep at least one enabled rule in the dataset from then on.
+### What happens before you create any sampling rule
+
+Nothing is sampled and you keep 100% of your traces. That is the expected starting state, not a
+fault, and it is why the install guides do not ask you to create a rule first.
+
+The mechanism is worth knowing, because it is organisation-scoped rather than dataset-scoped. The
+collector subscribes to one rule feed for the whole organisation, and evaluates each trace against
+whichever rules carry its dataset:
+
+| State | What the collector does | Result |
+| --- | --- | --- |
+| Your dataset has no rules, other datasets do | Receives the feed, finds nothing for your dataset | Pass-through, everything kept |
+| Your organisation has no rules at all | Never receives a feed, so it uses `fallbackSampleRatio` | Both install paths ship `1.0`, so everything kept |
+
+Both states keep all your data. The second is the reason both paths override
+`fallbackSampleRatio` to `1.0`: the collector's own default is `0.01`, which would keep 1% and look
+uncomfortably like a working install while you are still setting rules up.
 
 ## A worked example, measured
 
