@@ -12,18 +12,30 @@ collector fleet one outbound connection for the sampling decision stream and the
 of one per pod. Rules live in Dash0 and are pushed out live, with no redeploy and no restart.
 Nothing in front of your central collector changes.
 
+```mermaid
+flowchart LR
+  apps["your apps"]
+  central["your central<br/>OTel collector"]
+  existing["your existing<br/>destinations"]
+  ingress["Dash0 ingress<br/>:4317"]
+  control["Dash0 decision-maker<br/>and settings API<br/>:443"]
+
+  subgraph edge["installed by this tutorial, one namespace"]
+    direction TB
+    coll["edge collector<br/>enrich, spam filter, RED and<br/>custom metrics, tail sample"]
+    proxy["Edge Proxy<br/>one outbound connection<br/>for the whole fleet"]
+  end
+
+  apps --> central
+  central --> existing
+  central -- "OTLP" --> coll
+  coll -- "OTLP/TLS" --> ingress
+  coll <-. "gRPC :8011<br/>decisions and rules" .-> proxy
+  proxy <-. "TLS" .-> control
 ```
-  your apps ──▶ your central OTel collector ──┬──▶ your existing destinations
-                                              │
-                                              └──OTLP──▶ Dash0 edge collector
-                                                              │       │
-                                                     gRPC :8011│       │OTLP/TLS
-                                                              ▼       ▼
-                                                      Dash0 Edge Proxy   Dash0
-                                                              │  TLS :443
-                                                              ▼
-                                                  Dash0 (decisions + settings)
-```
+
+Solid arrows are telemetry, dotted arrows are the control plane. Your existing destinations keep
+receiving exactly what they receive today.
 
 ## Prerequisites
 
@@ -56,8 +68,8 @@ Two paths. Same two workloads, same collector configuration, same parameters. Pi
 | Helm chart, in [`chart/`](chart/)    | You have Helm | [docs/install-helm.md](docs/install-helm.md)       |
 | kustomize, in [`kubectl/`](kubectl/) | You do not    | [docs/install-kubectl.md](docs/install-kubectl.md) |
 
-Both paths begin by creating the dataset and one baseline sampling rule, before anything is
-deployed. A dataset with no rules leaves the collector in fallback.
+Both paths begin by creating the dataset, before anything is deployed. Sampling rules are not a
+prerequisite: until you create one you keep 100% of your traces, which is the right way to start.
 
 ## Then
 

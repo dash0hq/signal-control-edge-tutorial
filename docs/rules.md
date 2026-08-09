@@ -35,8 +35,17 @@ storing. That ordering is also the reason to be conservative with filters and ag
 sampling: a filter removes telemetry for every purpose, sampling only removes it from storage.
 
 Every rule below carries `dash0.com/origin`, set to the same value as `metadata.name`, because that
-is what the delete endpoint takes as its path segment. Set it on every rule you create or you will
-have to hunt the rule down in the UI to remove it.
+is what the delete endpoint takes as its path segment. Set it on every rule you create, or you have
+no handle to delete that rule with afterwards.
+
+Each rule body below is fed to `curl` from a here-document. Select the whole block, including the
+closing `JSON` line, and paste it.
+
+The delimiter is unquoted, so the shell reads the body before `curl` does: `${DASH0_DATASET}` is
+filled in for you, and `$`, backticks and backslashes stay live everywhere else. That is fine for
+the bodies below, whose only escapes are the `\"` inside the OTTL string, which the shell passes
+through untouched. If you write a body containing a `$`, a backtick, or a regex, quote the
+delimiter instead (`<<'JSON'`) and substitute the dataset another way, for example with `envsubst`.
 
 ## Spam filters
 
@@ -46,17 +55,32 @@ is one of `span`, `log`, `datapoint`, `web_event`; `filter` entries are combined
 
 ```bash
 curl -sS -X POST "${DASH0_API_URL}/api/spam-filters?dataset=${DASH0_DATASET}" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
-  "apiVersion": "v1alpha2", "kind": "Dash0SpamFilter",
-  "metadata": { "name": "drop-health-checks", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "drop-health-checks" } },
-  "spec": { "context": "span", "filter": [
-      { "key": "http.route", "operator": "is_one_of", "values": ["/health", "/ready"] } ] }}'
+  -H "Authorization: Bearer ${DASH0_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<JSON
+{
+  "apiVersion": "v1alpha2",
+  "kind": "Dash0SpamFilter",
+  "metadata": {
+    "name": "drop-health-checks",
+    "labels": {
+      "dash0.com/dataset": "${DASH0_DATASET}",
+      "dash0.com/origin": "drop-health-checks"
+    }
+  },
+  "spec": {
+    "context": "span",
+    "filter": [
+      { "key": "http.route", "operator": "is_one_of", "values": ["/health", "/ready"] }
+    ]
+  }
+}
+JSON
 ```
 
 > **Use positive operators only in spam filters: the collector skips any rule containing `is_not`,
-> `is_not_one_of`, `does_not_contain` and friends, so such a rule is accepted, appears in the UI and
-> quietly does nothing.**
+> `is_not_one_of`, `does_not_contain` and friends, so such a rule is accepted by the API, is listed
+> back to you unchanged, and quietly does nothing.**
 
 Express the exclusion the other way round: name what you want dropped, rather than what you want
 kept.
@@ -69,14 +93,31 @@ whatever you sample afterwards. `match.signal` is `spans` (duration histogram) o
 
 ```bash
 curl -sS -X POST "${DASH0_API_URL}/api/signal-to-metrics?dataset=${DASH0_DATASET}" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
+  -H "Authorization: Bearer ${DASH0_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<JSON
+{
   "kind": "Dash0SignalToMetrics",
-  "metadata": { "name": "checkout-duration", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "checkout-duration" } },
-  "spec": { "enabled": true, "display": { "name": "Checkout duration" },
-    "match": { "signal": "spans", "filters": [
-        { "key": "http.route", "operator": "is_one_of", "values": ["/api/checkout"] } ] },
-    "output": { "name": "checkout.duration", "interval": "60s" } }}'
+  "metadata": {
+    "name": "checkout-duration",
+    "labels": {
+      "dash0.com/dataset": "${DASH0_DATASET}",
+      "dash0.com/origin": "checkout-duration"
+    }
+  },
+  "spec": {
+    "enabled": true,
+    "display": { "name": "Checkout duration" },
+    "match": {
+      "signal": "spans",
+      "filters": [
+        { "key": "http.route", "operator": "is_one_of", "values": ["/api/checkout"] }
+      ]
+    },
+    "output": { "name": "checkout.duration", "interval": "60s" }
+  }
+}
+JSON
 ```
 
 > **Write signal-to-metrics filters with positive operators too. A negative operator evaluated
@@ -90,16 +131,34 @@ is optional and defaults to the last 15 minutes, nothing is persisted, and the a
 
 ```bash
 curl -sS -X POST "${DASH0_API_URL}/api/signal-to-metrics/test?dataset=${DASH0_DATASET}" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
+  -H "Authorization: Bearer ${DASH0_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<JSON
+{
   "definition": {
     "kind": "Dash0SignalToMetrics",
-    "metadata": { "name": "checkout-duration", "labels": {
-        "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "checkout-duration" } },
-    "spec": { "enabled": true, "display": { "name": "Checkout duration" },
-      "match": { "signal": "spans", "filters": [
-          { "key": "http.route", "operator": "is_one_of", "values": ["/api/checkout"] } ] },
-      "output": { "name": "checkout.duration", "interval": "60s" } } },
-  "timeRange": { "from": "now-30m", "to": "now" } }'
+    "metadata": {
+      "name": "checkout-duration",
+      "labels": {
+        "dash0.com/dataset": "${DASH0_DATASET}",
+        "dash0.com/origin": "checkout-duration"
+      }
+    },
+    "spec": {
+      "enabled": true,
+      "display": { "name": "Checkout duration" },
+      "match": {
+        "signal": "spans",
+        "filters": [
+          { "key": "http.route", "operator": "is_one_of", "values": ["/api/checkout"] }
+        ]
+      },
+      "output": { "name": "checkout.duration", "interval": "60s" }
+    }
+  },
+  "timeRange": { "from": "now-30m", "to": "now" }
+}
+JSON
 ```
 
 > **Send the whole rule, not an abbreviation. An incomplete body returns HTTP 400
@@ -108,6 +167,14 @@ curl -sS -X POST "${DASH0_API_URL}/api/signal-to-metrics/test?dataset=${DASH0_DA
 
 > **Keep the attributes you carry onto the metric low cardinality: every distinct combination of
 > values is a separate time series.**
+
+> **A signal-to-metrics `dash0.com/origin` is claimed for the whole organisation and is not released
+> when you delete the rule.** Deleting returns `200` and the rule disappears from the listing, but
+> creating it again with the same origin fails with `400 A signal-to-metrics configuration with the
+> submitted origin already exists in this organization`, naming something no listing will show you.
+> Spam filters and sampling rules do not behave this way; both recycle an origin freely. So pick a
+> distinct origin per rule, and if you are re-running these examples, append a suffix rather than
+> reusing `checkout-duration`.
 
 ## Tail sampling
 
@@ -121,13 +188,30 @@ an attribute), `ottl` and `and`. There is no `or`: write separate rules, or one 
 
 ```bash
 curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
+  -H "Authorization: Bearer ${DASH0_TOKEN}" \
+  -H "Content-Type: application/json" \
+  --data-binary @- <<JSON
+{
   "kind": "Dash0Sampling",
-  "metadata": { "name": "slow-requests", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "slow-requests" } },
-  "spec": { "enabled": true, "display": { "name": "Keep requests slower than 2s" },
-    "conditions": { "kind": "ottl", "spec": {
-      "ottl": "end_time_unix_nano - start_time_unix_nano > Nanoseconds(Duration(\"2s\"))" } } }}'
+  "metadata": {
+    "name": "slow-requests",
+    "labels": {
+      "dash0.com/dataset": "${DASH0_DATASET}",
+      "dash0.com/origin": "slow-requests"
+    }
+  },
+  "spec": {
+    "enabled": true,
+    "display": { "name": "Keep requests slower than 2s" },
+    "conditions": {
+      "kind": "ottl",
+      "spec": {
+        "ottl": "end_time_unix_nano - start_time_unix_nano > Nanoseconds(Duration(\"2s\"))"
+      }
+    }
+  }
+}
+JSON
 ```
 
 > **The `Nanoseconds(...)` wrapper is required: without it the expression is accepted by the API and
@@ -136,9 +220,23 @@ curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
 > **Sampling-rule creation reads the dataset only from `metadata.labels["dash0.com/dataset"]`, so a
 > `?dataset=` query parameter is ignored on this endpoint and the rule lands in `default`.**
 
-A dataset with no sampling rules never receives a rule message at all, so the collector stays in
-fallback permanently. Both install paths therefore have you create one baseline probabilistic rule
-before deploying. Keep at least one enabled rule in the dataset from then on.
+### What happens before you create any sampling rule
+
+Nothing is sampled and you keep 100% of your traces. That is the expected starting state, not a
+fault, and it is why the install guides do not ask you to create a rule first.
+
+The mechanism is worth knowing, because it is organisation-scoped rather than dataset-scoped. The
+collector subscribes to one rule feed for the whole organisation, and evaluates each trace against
+whichever rules carry its dataset:
+
+| State | What the collector does | Result |
+| --- | --- | --- |
+| Your dataset has no rules, other datasets do | Receives the feed, finds nothing for your dataset | Pass-through, everything kept |
+| Your organisation has no rules at all | Never receives a feed, so it uses `fallbackSampleRatio` | Both install paths ship `1.0`, so everything kept |
+
+Both states keep all your data. The second is the reason both paths override
+`fallbackSampleRatio` to `1.0`: the collector's own default is `0.01`, which would keep 1% and look
+uncomfortably like a working install while you are still setting rules up.
 
 ## A worked example, measured
 
@@ -182,18 +280,33 @@ concluding that a rule does not work.
 
 ## List and delete
 
-```bash
-# swap the path for spam-filters or signal-to-metrics to list those
-curl -sS "${DASH0_API_URL}/api/sampling-rules?dataset=${DASH0_DATASET}" -H "Authorization: Bearer ${DASH0_TOKEN}"
+List, one signal type per command. Swap the path segment for `spam-filters` or `signal-to-metrics`:
 
-curl -sS -X DELETE "${DASH0_API_URL}/api/sampling-rules/slow-requests?dataset=${DASH0_DATASET}"        -H "Authorization: Bearer ${DASH0_TOKEN}"
-curl -sS -X DELETE "${DASH0_API_URL}/api/sampling-rules/baseline-5-percent?dataset=${DASH0_DATASET}"   -H "Authorization: Bearer ${DASH0_TOKEN}"
-curl -sS -X DELETE "${DASH0_API_URL}/api/spam-filters/drop-health-checks?dataset=${DASH0_DATASET}"     -H "Authorization: Bearer ${DASH0_TOKEN}"
-curl -sS -X DELETE "${DASH0_API_URL}/api/signal-to-metrics/checkout-duration?dataset=${DASH0_DATASET}" -H "Authorization: Bearer ${DASH0_TOKEN}"
+```bash
+curl -sS "${DASH0_API_URL}/api/sampling-rules?dataset=${DASH0_DATASET}" \
+  -H "Authorization: Bearer ${DASH0_TOKEN}" | python3 -m json.tool
 ```
 
-Deleting the last enabled sampling rule puts the collector back into fallback, so remove the
-baseline rule only when you are tearing the installation down.
+Delete by the `dash0.com/origin` value, which is the last path segment:
+
+```bash
+curl -sS -X DELETE "${DASH0_API_URL}/api/sampling-rules/slow-requests?dataset=${DASH0_DATASET}" \
+  -H "Authorization: Bearer ${DASH0_TOKEN}"
+
+curl -sS -X DELETE "${DASH0_API_URL}/api/spam-filters/drop-health-checks?dataset=${DASH0_DATASET}" \
+  -H "Authorization: Bearer ${DASH0_TOKEN}"
+
+curl -sS -X DELETE "${DASH0_API_URL}/api/signal-to-metrics/checkout-duration?dataset=${DASH0_DATASET}" \
+  -H "Authorization: Bearer ${DASH0_TOKEN}"
+```
+
+The three endpoints do not agree on what a missing rule means: deleting a sampling rule or a spam
+filter that is not there returns `200`, while the same delete against signal-to-metrics returns
+`404` with a JSON error body. A `404` from the third command therefore means the rule was already
+gone, not that the command is wrong.
+
+Deleting every rule in the dataset is safe: it returns you to keeping 100% of your traces, which is
+the same state you installed into.
 
 ## Next
 

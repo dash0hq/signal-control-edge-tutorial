@@ -193,11 +193,11 @@ these hosts into your egress proxy or firewall instead:
 Read these before you change a default.
 
 - **`collector.sampling.fallbackSampleRatio` is `1.0`, not the collector's own
-  `0.01`.** A dataset with no sampling rules never receives a rule message, so
-  the collector stays in fallback. At `0.01` that keeps 1%, which is hard to
-  tell apart from a working install while you are still setting rules up. `1.0`
-  turns the same situation into "no reduction", which is visible. Lower it once
-  your rules are in place.
+  `0.01`.** An organisation with no sampling rules anywhere never receives a
+  rule feed, so the collector uses this ratio. At `0.01` that keeps 1%, which is
+  hard to tell apart from a working install while you are still setting rules
+  up. `1.0` turns the same situation into "no reduction", which is visible.
+  Lower it once your rules are in place.
 - **No autoscaler on the collector.** Every pod that goes away loses the traces
   buffered in its sampling reservoir.
 - **`replicaCount` is set even with the Edge Proxy autoscaler on.** A Deployment
@@ -259,6 +259,9 @@ helm template t ./chart -n dash0-signal-control \
   --set dash0.dataset=example --set dash0.token.value=auth_x \
   | python3 -c 'import sys,yaml; [sys.stdout.write(d["data"]["config.yaml"]) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="ConfigMap"]' \
   > /tmp/cfg/config.yaml
+
+# an empty file validates clean and would tell you nothing
+test -s /tmp/cfg/config.yaml || { echo 'config extraction failed'; exit 1; }
 
 cat > /tmp/cfg/collector.env <<'EOF'
 DASH0_DATASET=example

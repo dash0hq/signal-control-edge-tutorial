@@ -24,15 +24,10 @@ and nothing needs `sed`.
 > **`authentication token is not authorized to ingest into dataset "..."` while every pod stays**
 > **Ready.** Check the token's scope before you check anything else.
 
-## Step 1. Create the dataset and one baseline sampling rule
+## Step 1. Create the dataset
 
-Do this before you apply anything.
-
-> **A dataset with no sampling rules never receives a rule message at all, so the collector stays in
-> fallback permanently.**
-
-These manifests set that fallback to keep everything (`SAMPLING_FALLBACK_SAMPLE_RATIO: "1.0"`), so the
-state reads as "no reduction" rather than as missing data. Create a rule anyway:
+Do this before you apply anything. The dataset must already exist in Dash0: telemetry sent to a
+dataset that does not exist is accepted, but you cannot attach rules to it afterwards.
 
 ```bash
 export DASH0_API_URL="https://api.eu-west-1.aws.dash0.com"   # your region
@@ -43,18 +38,11 @@ export DASH0_TOKEN="auth_..."
 curl -sS -o /dev/null -w '%{http_code}\n' \
   "${DASH0_API_URL}/api/sampling-rules?dataset=${DASH0_DATASET}" \
   -H "Authorization: Bearer ${DASH0_TOKEN}"
-
-curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
-  "kind": "Dash0Sampling",
-  "metadata": { "name": "baseline-5-percent", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "baseline-5-percent" } },
-  "spec": { "enabled": true, "display": { "name": "Baseline 5%" },
-    "conditions": { "kind": "probabilistic", "spec": { "rate": 0.05 } } }}'
 ```
 
-> **Sampling-rule creation reads the dataset only from `metadata.labels["dash0.com/dataset"]`, so a
-> `?dataset=` query parameter is ignored here and the rule lands in `default`.**
+You do **not** need a sampling rule to install. Until one exists in your dataset nothing is sampled
+and you keep 100% of your traces, which is the right starting point: get telemetry flowing first,
+confirm it in Dash0, then add rules from [docs/rules.md](rules.md) when you want reduction.
 
 ## Step 2. Fill in the two env files and apply
 
@@ -62,7 +50,16 @@ curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
 cd kubectl
 cp base/dash0.env.example base/dash0.env     # DASH0_REGION, DASH0_DOMAIN, DASH0_DATASET
 cp base/token.env.example base/token.env     # one line, token=auth_...
-$EDITOR base/dash0.env base/token.env
+```
+
+That `cd kubectl` matters: every path on the rest of this page is relative to it, including the
+overlays and the uninstall command.
+
+Now open `base/dash0.env` and `base/token.env` in an editor and fill both in. `DASH0_DATASET` ships
+empty and the token ships as `auth_REPLACE_ME`, so applying before you edit them gives you a
+collector in `CrashLoopBackOff` and an Edge Proxy that never becomes Ready. Then apply:
+
+```bash
 kubectl apply -k .
 ```
 
@@ -133,9 +130,10 @@ wiring, and the counters that prove data is flowing.
 | `kubectl apply -k loadgen`       | The optional traffic generator, for a cluster with no real traffic yet.                                                                                                              |
 | `kubectl apply -k networkpolicy` | Default deny plus the egress the two workloads need. Apply and smoke test it well before you need it, and add your node CIDRs first if your CNI enforces host to pod traffic.        |
 
-**If you changed the namespace, change it in the overlay's `kustomization.yaml`
-too. Each overlay declares its own `namespace:`, and one still pointing at
-`dash0-signal-control` re-deploys the entire installation there.**
+**If you changed the namespace, change it in `loadgen/kustomization.yaml` and
+`networkpolicy/kustomization.yaml` too. Those two declare their own `namespace:`, and one still
+pointing at `dash0-signal-control` re-deploys the entire installation there. The `endpoints`
+overlay declares none and inherits the base, so it needs no change.**
 
 The `endpoints` and `loadgen` overlays do not compose. For explicit endpoints plus generated
 traffic, apply `-k endpoints` then
@@ -176,9 +174,23 @@ service:
     metrics: { exporters: [..., otlp/dash0-edge] }     # optional
 ```
 
+If your central collector is the upstream `opentelemetry-collector` Helm chart, all of the above
+goes under `config:` in its values file, and a pipeline you override there replaces the chart's
+exporter list rather than adding to it, so name every destination you still want.
+
+`tls: { insecure: true }` is not optional on this hop. The edge collector's OTLP receiver is
+plaintext gRPC inside the cluster, so an exporter block copied from an existing internet facing
+destination, where `insecure` is `false`, fails every export with `tls: first record does not look
+like a TLS handshake`.
+
 Set `send_batch_max_size` on your `batch` processor so one OTLP request stays under the receive
 limit. `8192` is reasonable; the edge collector accepts 16 MiB per message. Round robin across the
 collector pods is correct and needs no trace aware load balancer.
+
+Your `batch` timeout is subtracted from the reservoir budget, because a trace's spans can be split
+across consecutive batches. With the default `RESERVOIR_BUFFER_DURATION` of 30 s, a 10 s batch
+timeout leaves about 20 s of real reassembly time. Adding the edge collector as a second exporter
+also means your central collector's `memory_limiter` ceiling now covers two sending queues.
 
 | Do not                                                    | Because                                                                                                                                                         |
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|

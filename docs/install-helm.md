@@ -24,15 +24,10 @@ the same two workloads and read the same collector configuration.
 > **`authentication token is not authorized to ingest into dataset "..."` while every pod stays**
 > **Ready.** Check the token's scope before you check anything else.
 
-## Step 1. Create the dataset and one baseline sampling rule
+## Step 1. Create the dataset
 
-Do this before you deploy anything.
-
-> **A dataset with no sampling rules never receives a rule message at all, so the collector stays in
-> fallback permanently.**
-
-The chart sets that fallback to keep everything (`collector.sampling.fallbackSampleRatio: "1.0"`), so
-the state reads as "no reduction" rather than as missing data. Create a rule anyway:
+Do this before you deploy anything. The dataset must already exist in Dash0: telemetry sent to a
+dataset that does not exist is accepted, but you cannot attach rules to it afterwards.
 
 ```bash
 export DASH0_API_URL="https://api.eu-west-1.aws.dash0.com"   # your region
@@ -43,18 +38,11 @@ export DASH0_TOKEN="auth_..."
 curl -sS -o /dev/null -w '%{http_code}\n' \
   "${DASH0_API_URL}/api/sampling-rules?dataset=${DASH0_DATASET}" \
   -H "Authorization: Bearer ${DASH0_TOKEN}"
-
-curl -sS -X POST "${DASH0_API_URL}/api/sampling-rules" \
-  -H "Authorization: Bearer ${DASH0_TOKEN}" -H "Content-Type: application/json" -d '{
-  "kind": "Dash0Sampling",
-  "metadata": { "name": "baseline-5-percent", "labels": {
-      "dash0.com/dataset": "'"${DASH0_DATASET}"'", "dash0.com/origin": "baseline-5-percent" } },
-  "spec": { "enabled": true, "display": { "name": "Baseline 5%" },
-    "conditions": { "kind": "probabilistic", "spec": { "rate": 0.05 } } }}'
 ```
 
-> **Sampling-rule creation reads the dataset only from `metadata.labels["dash0.com/dataset"]`, so a
-> `?dataset=` query parameter is ignored here and the rule lands in `default`.**
+You do **not** need a sampling rule to install. Until one exists in your dataset nothing is sampled
+and you keep 100% of your traces, which is the right starting point: get telemetry flowing first,
+confirm it in Dash0, then add rules from [docs/rules.md](rules.md) when you want reduction.
 
 ## Step 2. Write your values
 
@@ -72,7 +60,7 @@ EOF
 | --- | --- |
 | `dash0.dataset` | **Required.** Must exist, and must be the dataset your rules live in. |
 | `dash0.token.value` | **Required** unless `existingSecret` is set. The chart puts it in a Secret it owns and never renders it into a Deployment. |
-| `dash0.token.existingSecret` | A Secret you created yourself, one key holding the raw token. Wins over `value`. |
+| `dash0.token.existingSecret` | A Secret you created yourself, one key holding the raw token. Mutually exclusive with `value`: set exactly one, or the render fails. |
 | `dash0.region` | Defaults to `eu-west-1`. |
 | `dash0.domain` | Defaults to `aws.dash0.com`. Change only if Dash0 gave you another. |
 
@@ -171,10 +159,24 @@ service:
     metrics: { exporters: [..., otlp/dash0-edge] }     # optional
 ```
 
+If your central collector is the upstream `opentelemetry-collector` Helm chart, all of the above
+goes under `config:` in its values file, and a pipeline you override there replaces the chart's
+exporter list rather than adding to it, so name every destination you still want.
+
+`tls: { insecure: true }` is not optional on this hop. The edge collector's OTLP receiver is
+plaintext gRPC inside the cluster, so an exporter block copied from an existing internet facing
+destination, where `insecure` is `false`, fails every export with `tls: first record does not look
+like a TLS handshake`.
+
 Set `send_batch_max_size` on your `batch` processor so one OTLP request stays under the receive
 limit. `8192` is reasonable; the edge collector accepts 16 MiB per message
 (`collector.otlpMaxRecvMsgSizeMib`). Round robin across the collector pods is correct and needs no
 trace aware load balancer.
+
+Your `batch` timeout is subtracted from the reservoir budget, because a trace's spans can be split
+across consecutive batches. With the default `collector.reservoir.bufferDuration` of 30 s, a 10 s
+batch timeout leaves about 20 s of real reassembly time. Adding the edge collector as a second
+exporter also means your central collector's `memory_limiter` ceiling now covers two sending queues.
 
 | Do not                                                    | Because                                                                                                                                                         |
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -189,13 +191,17 @@ Only for a cluster with no real traffic yet:
 ```bash
 helm upgrade signal-control-edge ./chart -n dash0-signal-control \
   -f my-values.yaml --set generator.enabled=true
-
-kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0   # stop the traffic
 ```
 
 One generator, deliberately: every span is identical and the rate is fixed, so each rule moves a
 number you can predict in advance. Its exact shape is in
 [rules.md](rules.md#a-worked-example-measured).
+
+Stop the traffic without uninstalling:
+
+```bash
+kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0
+```
 
 ## Sizing
 

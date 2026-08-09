@@ -154,7 +154,8 @@ telemetry to the same dataset.**
 Read the namespace back from a running pod:
 
 ```sh
-kubectl -n <namespace> get pod -l app.kubernetes.io/name=dash0-edge-collector \
+NS=dash0-signal-control        # your namespace
+kubectl -n "$NS" get pod -l app.kubernetes.io/name=dash0-edge-collector \
   -o jsonpath='{.items[0].spec.containers[0].env}'
 ```
 
