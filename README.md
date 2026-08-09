@@ -30,7 +30,7 @@ flowchart LR
   central --> existing
   central -- "OTLP" --> coll
   coll -- "OTLP/TLS" --> ingress
-  coll <-. "gRPC :8011\ndecisions and rules" .-> proxy
+  coll <-. "gRPC :8011 \ndecisions and rules" .-> proxy
   proxy <-. "TLS" .-> control
 ```
 
