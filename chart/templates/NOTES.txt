@@ -44,14 +44,14 @@ exactly what a staged install does.
   the Decision-Maker, so a pod that never becomes Ready means the token, the
   region or your egress rules are wrong. Read ITS logs, not the collector's:
 
-     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dash0edge.proxyName" . }} --tail=50
+     kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "dash0edge.proxyName" . }} --prefix --tail=50
 {{- end }}
 {{- if .Values.collector.enabled }}
 
 * Confirm the collector is in Edge Proxy mode and stamping the edge marker.
   Both lines must appear:
 
-     kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "dash0edge.collectorName" . }} \
+     kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "dash0edge.collectorName" . }} --prefix --tail=-1 \
        | grep -E 'Subscribing to edge-proxy|Edge mode detected'
 
   "Polling Dash0 API for settings" instead of the first line means
@@ -60,7 +60,7 @@ exactly what a staged install does.
 
 * The collector is disabled, so nothing is exporting to Dash0 yet. Add it with:
 
-     helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} -f <your-values.yaml>
+     helm upgrade {{ .Release.Name }} ./chart -n {{ .Release.Namespace }} -f my-values.yaml
 {{- end }}
 
 * Nothing is sampled yet, so you keep 100% of your traces in dataset

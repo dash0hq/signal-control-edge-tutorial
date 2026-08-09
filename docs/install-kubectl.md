@@ -102,7 +102,8 @@ and your egress rules on their own.
 
 ```bash
 kubectl -n dash0-signal-control rollout status deploy/dash0-edge-proxy --timeout=90s
-kubectl -n dash0-signal-control logs deploy/dash0-edge-proxy --tail=40
+kubectl -n dash0-signal-control logs -l app.kubernetes.io/name=dash0-edge-proxy \
+  --prefix --tail=40
 ```
 
 | Log line                                                                                                               | Meaning                                                                  |
@@ -128,6 +129,9 @@ wiring, and the counters that prove data is flowing.
 | `kubectl apply -k endpoints`     | Explicit endpoints instead of region plus domain. Uncomment and set all three `DASH0_ENDPOINT_*` keys in `base/dash0.env` first, or the pods stop with `CreateContainerConfigError`. |
 | `kubectl apply -k loadgen`       | The optional traffic generator, for a cluster with no real traffic yet.                                                                                                              |
 | `kubectl apply -k networkpolicy` | Default deny plus the egress the two workloads need. Apply and smoke test it well before you need it, and add your node CIDRs first if your CNI enforces host to pod traffic.        |
+
+A NetworkPolicy is only enforced if your CNI implements it. A default `minikube` does not, and the
+API server accepts the objects regardless, so treat a clean `apply` as necessary but not sufficient.
 
 **If you changed the namespace, change it in `loadgen/kustomization.yaml` and
 `networkpolicy/kustomization.yaml` too. Those two declare their own `namespace:`, and one still
