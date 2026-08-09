@@ -53,6 +53,10 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: {{ include "dash0edge.proxyName" . }}
+      {{- with .Values.edgeProxy.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.edgeProxy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

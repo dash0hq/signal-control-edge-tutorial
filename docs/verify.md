@@ -15,7 +15,8 @@ How to tell the installation is working, and what each number means.
 ## 1. Three log lines prove the wiring
 
 ```bash
-kubectl -n dash0-signal-control logs deploy/dash0-edge-collector | \
+kubectl -n dash0-signal-control logs -l app.kubernetes.io/name=dash0-edge-collector \
+  --prefix --tail=-1 | \
   grep -E "Subscribing to edge-proxy|Edge mode detected|Using percentage memory limiter"
 ```
 
@@ -27,6 +28,10 @@ kubectl -n dash0-signal-control logs deploy/dash0-edge-collector | \
 
 > **A Ready collector pod proves nothing: it stays Ready while the Edge Proxy is unreachable and
 > while every export is failing.**
+
+> **Read logs by label, not with `logs deploy/...`.** `deploy/` resolves to one arbitrary pod of the
+> three, and the export failure described in section 5 hits pods individually. A single-pod read
+> returned zero while another pod in the same Deployment was failing 115 exports.
 
 ## 2. The Edge Proxy is serving
 
@@ -53,8 +58,10 @@ kubectl -n dash0-signal-control get deploy dash0-edge-proxy
 ## 3. Three counters are the pipeline, in order
 
 These are the numbers to judge the deployment on. The gap between the first and the last is your
-reduction. Read a window that ended a couple of minutes ago, because the most recent seconds are
-always a partial flush.
+reduction. Run them in Dash0 against the dataset the collector exports to, in a dashboard panel or
+the metrics query builder. Read a window that ended a couple of minutes ago, because the most recent
+seconds are always a partial flush, and give a freshly installed collector about five minutes before
+you trust a `[3m]` rate: the window has to fill before it stops reading low.
 
 ```promql
 sum(rate({otel_metric_name="otelcol_receiver_accepted_spans"}[3m]))              # in, before any rule
@@ -78,13 +85,13 @@ out, and nothing measured was lost.
 | `otelcol_exporter_sent_log_records`                                                 | Non-zero if you send logs                                                                                                                                                                                              |
 | `otelcol_exporter_sent_metric_points`                                               | Non-zero if you send metrics                                                                                                                                                                                           |
 | `dash0.edge_settings.mode{mode="proxy"}`                                            | `1` on every collector pod                                                                                                                                                                                             |
-| `dash0.edge_settings.grpc_stream_open`                                              | `1`                                                                                                                                                                                                                    |
+| `dash0.edge_settings.grpc_stream_open`                                              | `1` per collector pod, so `sum(...)` equals your collector replica count                                                                                                                                              |
 | `dash0.edge_settings.rules_loaded{kind="signal_to_metrics"}`                        | Zero until your organisation has signal-to-metrics rules, then non-zero and steady. This counts the whole snapshot your organisation sends, every dataset, not the rules in yours, so do not expect it to match what you just created. A fall from non-zero toward zero is the rule-wipe signature. |
 | `dash0.edge_proxy.subscriber.count`                                                 | Summed across Edge Proxy pods, equals your collector pod count                                                                                                                                                         |
 | `dash0.sampling_processor.spans_forwarded_fallback`                                 | Depends on whether your **organisation** has any sampling rules. If it does: flat once running, and a rate above zero means rules are not reaching this collector. A fresh collector always accrues some in the seconds before its first snapshot arrives, so judge it on `rate(...[2m])`, not on the total. If your organisation has no sampling rules anywhere: this rises steadily at your full span rate, which is fallback at ratio `1.0` keeping everything, and it is correct. It stops as soon as the organisation's first rule exists. |
 | `dash0.trace_reservoir.watch_expirations`                                           | **Flat at zero**, by `rate(...[2m])`. An increase means decisions arrive after the trace left the buffer.                                                                                                                                  |
 | `dash0.trace_reservoir.watch_matches` + `watch_direct_forwards` vs `spans_ingested` | Your real keep ratio                                                                                                                                                                                                   |
-| `dash0.decision_maker_client.decisions_dropped`                                     | Zero. Non-zero means under-kept or partial traces.                                                                                                                                                                     |
+| `dash0.decision_maker_client.decisions_dropped`                                     | Zero. Non-zero means under-kept or partial traces. These are delta counters, so a healthy install returns **no series at all** rather than a series of zeros: an empty result here is the good outcome, not a broken query. |
 
 ## 5. Check every signal, not just one
 
@@ -101,12 +108,40 @@ Confirm with `grep "Exporting failed"` on the collector logs, and with an IPv6 a
 default route from:
 
 ```bash
+INGRESS=ingress.eu-west-1.aws.dash0.com     # your region and domain
 kubectl -n dash0-signal-control exec deploy/dash0-edge-collector -- \
-  sh -c 'getent hosts ingress.<region>.<domain>; ip -6 route show default'
+  sh -c "getent hosts $INGRESS; ip -6 route show default"
 ```
 
-The cluster side fix is a resolver that returns A records only for these names. See
-[troubleshooting.md](troubleshooting.md) for the stopgap.
+The cluster side fix is a resolver that returns A records only for these names. Until you have that,
+pin the IPv4 with `hostAliases`. Helm:
+
+```yaml
+collector:
+  hostAliases:
+    - ip: "203.0.113.10"                          # dig +short A ingress.<region>.<domain>
+      hostnames: ["ingress.eu-west-1.aws.dash0.com"]
+```
+
+kustomize: the patch must live **inside** `base/`, because kustomize refuses to read a file outside
+its own directory. Write `kubectl/base/hostaliases-patch.yaml` and add
+`patches:\n  - path: hostaliases-patch.yaml` to `base/kustomization.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dash0-edge-collector
+spec:
+  template:
+    spec:
+      hostAliases:
+        - ip: "203.0.113.10"
+          hostnames: ["ingress.eu-west-1.aws.dash0.com"]
+```
+
+**The address rotates, so this is a temporary measure that will silently stop working.** Fix the
+resolver.
 
 ## 6. RED metrics are the demonstration
 

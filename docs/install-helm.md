@@ -110,7 +110,8 @@ step tests the token, the region and your egress rules on their own, before the 
 ```bash
 kubectl -n dash0-signal-control wait --for=condition=available \
   --timeout=90s deploy/dash0-edge-proxy
-kubectl -n dash0-signal-control logs deploy/dash0-edge-proxy --tail=40
+kubectl -n dash0-signal-control logs -l app.kubernetes.io/name=dash0-edge-proxy \
+  --prefix --tail=40
 ```
 
 | Log line | Meaning |

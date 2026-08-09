@@ -56,6 +56,10 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: {{ include "dash0edge.collectorName" . }}
+      {{- with .Values.collector.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.collector.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
