@@ -22,7 +22,7 @@ flowchart LR
 
   subgraph edge["installed by this tutorial, one namespace"]
     direction TB
-    coll["edge collector\nenrich, spam filter, RED and\ncustom metrics, tail sample"]
+    coll["Edge Collector\nenrich, spam filter, RED and\ncustom metrics, tail sample"]
     proxy["Edge Proxy\none outbound connection\nfor the whole fleet"]
   end
 
