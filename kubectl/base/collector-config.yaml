@@ -173,7 +173,10 @@ processors:
     decision_channel_max_size: 10000
     eviction_channel_size: 10000
     # What happens when sampling rules are not available - at startup, during a
-    # Dash0 connectivity blip, or when the dataset has no rules at all.
+    # Dash0 connectivity blip, or when your organisation has no sampling rules
+    # anywhere. A dataset with no rules inside an organisation that has rules
+    # elsewhere never reaches this: the collector receives the feed, finds
+    # nothing carrying that dataset, and passes everything through.
     #
     # The shipped default is 0.01, i.e. keep 1% and drop the rest. While you are
     # still setting rules up that is the wrong failure mode: it looks identical

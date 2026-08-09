@@ -81,14 +81,14 @@ spec:
             - { name: internal, containerPort: 8012, protocol: TCP }
           env:
             {{- /*
-            DASH0_TOKEN is declared FIRST so the two header strings below can
+            DASH0_AUTH_TOKEN is declared FIRST so the two header strings below can
             compose it with $(VAR). Kubernetes expands $(VAR) inside an env
             value using variables declared EARLIER in the same container's env
             list, so order here is load bearing: move this entry down and the
-            headers ship the literal text "$(DASH0_TOKEN)".
+            headers ship the literal text "$(DASH0_AUTH_TOKEN)".
             Composing this way keeps the token out of the Deployment manifest.
             */}}
-            - name: DASH0_TOKEN
+            - name: DASH0_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "dash0edge.tokenSecretName" . }}
@@ -97,7 +97,7 @@ spec:
             - name: UPSTREAM_ADDRESS
               value: {{ include "dash0edge.decisionMakerEndpoint" . | quote }}
             - name: UPSTREAM_HEADERS
-              value: "authorization=Bearer $(DASH0_TOKEN),Dash0-Dataset={{ include "dash0edge.dataset" . }}"
+              value: "authorization=Bearer $(DASH0_AUTH_TOKEN),Dash0-Dataset={{ include "dash0edge.dataset" . }}"
             - name: FALLBACKMINCONNECTEDRATIO
               value: {{ .Values.edgeProxy.fallbackMinConnectedRatio | quote }}
             # --- organisation settings feed ---------------------------------
@@ -110,7 +110,7 @@ spec:
             settings poller fetches the whole organisation.
             */}}
             - name: UPSTREAM_EDGESETTINGS_HEADERS
-              value: "authorization=Bearer $(DASH0_TOKEN)"
+              value: "authorization=Bearer $(DASH0_AUTH_TOKEN)"
             - name: UPSTREAM_EDGESETTINGS_REFRESHINTERVAL
               value: {{ .Values.edgeProxy.settingsRefreshInterval | quote }}
             # --- server ------------------------------------------------------

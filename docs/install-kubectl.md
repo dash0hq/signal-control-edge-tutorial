@@ -50,7 +50,16 @@ confirm it in Dash0, then add rules from [docs/rules.md](rules.md) when you want
 cd kubectl
 cp base/dash0.env.example base/dash0.env     # DASH0_REGION, DASH0_DOMAIN, DASH0_DATASET
 cp base/token.env.example base/token.env     # one line, token=auth_...
-$EDITOR base/dash0.env base/token.env
+```
+
+That `cd kubectl` matters: every path on the rest of this page is relative to it, including the
+overlays and the uninstall command.
+
+Now open `base/dash0.env` and `base/token.env` in an editor and fill both in. `DASH0_DATASET` ships
+empty and the token ships as `auth_REPLACE_ME`, so applying before you edit them gives you a
+collector in `CrashLoopBackOff` and an Edge Proxy that never becomes Ready. Then apply:
+
+```bash
 kubectl apply -k .
 ```
 
@@ -121,9 +130,10 @@ wiring, and the counters that prove data is flowing.
 | `kubectl apply -k loadgen`       | The optional traffic generator, for a cluster with no real traffic yet.                                                                                                              |
 | `kubectl apply -k networkpolicy` | Default deny plus the egress the two workloads need. Apply and smoke test it well before you need it, and add your node CIDRs first if your CNI enforces host to pod traffic.        |
 
-**If you changed the namespace, change it in the overlay's `kustomization.yaml`
-too. Each overlay declares its own `namespace:`, and one still pointing at
-`dash0-signal-control` re-deploys the entire installation there.**
+**If you changed the namespace, change it in `loadgen/kustomization.yaml` and
+`networkpolicy/kustomization.yaml` too. Those two declare their own `namespace:`, and one still
+pointing at `dash0-signal-control` re-deploys the entire installation there. The `endpoints`
+overlay declares none and inherits the base, so it needs no change.**
 
 The `endpoints` and `loadgen` overlays do not compose. For explicit endpoints plus generated
 traffic, apply `-k endpoints` then

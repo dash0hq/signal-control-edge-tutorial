@@ -63,11 +63,14 @@ exactly what a staged install does.
      helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} -f <your-values.yaml>
 {{- end }}
 
-* Create at least one enabled sampling rule in dataset "{{ include "dash0edge.dataset" . }}".
-  Until one exists the collector sits in fallback and keeps everything, because
-  collector.sampling.fallbackSampleRatio is {{ .Values.collector.sampling.fallbackSampleRatio }}. That is deliberate: while
-  you are still setting rules up, no reduction is a visible symptom, whereas
-  the collector's own default of 0.01 keeps 1% and looks much like success.
+* Nothing is sampled yet, so you keep 100% of your traces in dataset
+  "{{ include "dash0edge.dataset" . }}". That is the intended starting state and not a fault:
+  confirm telemetry is arriving first, then add rules from docs/rules.md when
+  you want reduction.
+
+  collector.sampling.fallbackSampleRatio is {{ .Values.collector.sampling.fallbackSampleRatio }}, which covers the one
+  case that reaches it, an organisation with no sampling rules anywhere. The
+  collector's own default of 0.01 keeps 1% and looks much like success.
 {{- if .Values.generator.enabled }}
 
 The load generator is ON. Stop the traffic without uninstalling:

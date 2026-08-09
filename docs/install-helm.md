@@ -60,7 +60,7 @@ EOF
 | --- | --- |
 | `dash0.dataset` | **Required.** Must exist, and must be the dataset your rules live in. |
 | `dash0.token.value` | **Required** unless `existingSecret` is set. The chart puts it in a Secret it owns and never renders it into a Deployment. |
-| `dash0.token.existingSecret` | A Secret you created yourself, one key holding the raw token. Wins over `value`. |
+| `dash0.token.existingSecret` | A Secret you created yourself, one key holding the raw token. Mutually exclusive with `value`: set exactly one, or the render fails. |
 | `dash0.region` | Defaults to `eu-west-1`. |
 | `dash0.domain` | Defaults to `aws.dash0.com`. Change only if Dash0 gave you another. |
 
@@ -191,13 +191,17 @@ Only for a cluster with no real traffic yet:
 ```bash
 helm upgrade signal-control-edge ./chart -n dash0-signal-control \
   -f my-values.yaml --set generator.enabled=true
-
-kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0   # stop the traffic
 ```
 
 One generator, deliberately: every span is identical and the rate is fixed, so each rule moves a
 number you can predict in advance. Its exact shape is in
 [rules.md](rules.md#a-worked-example-measured).
+
+Stop the traffic without uninstalling:
+
+```bash
+kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0
+```
 
 ## Sizing
 

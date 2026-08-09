@@ -23,7 +23,7 @@ kubectl -n dash0-signal-control logs deploy/dash0-edge-collector | \
 |-------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
 | `Subscribing to edge-proxy for settings and log patterns`               | The rule feed goes through the Edge Proxy. `Polling Dash0 API for settings` instead means `EDGE_PROXY_ENDPOINT` never reached the container. |
 | `Edge mode detected, will stamp resources with edge RED metrics marker` | Without it Dash0 derives RED metrics a second time server side and every number doubles.                                                     |
-| `Using percentage memory limiter total_memory_mib=4096`                 | Must match the container memory limit. If it matches the node's RAM, the pod has no limit and the memory limiter is inert.                   |
+| `Using percentage memory limiter` with `"total_memory_mib":4096`        | The collector logs JSON, so this arrives as a field, not as `key=value`. It must match the container memory limit. If it matches the node's RAM, the pod has no limit and the memory limiter is inert. |
 
 > **A Ready collector pod proves nothing: it stays Ready while the Edge Proxy is unreachable and
 > while every export is failing.**
@@ -66,9 +66,9 @@ The middle one is what feeds RED metrics and signal-to-metrics rules. A healthy 
 gap between the first and the third with the second close to the first: sampling took the volume
 out, and nothing measured was lost.
 
-> Today the SignalControl page in the Dash0 UI measures its Spans row on the Dash0 side, after the
-> edge collector has already reduced the stream, so for an edge install it understates the reduction
-> achieved. Judge reduction from the three counters above rather than from that page.
+> Judge the reduction from these three counters. Anything measured on the Dash0 side is measured
+> after the edge collector has already reduced the stream, so it cannot show you what the edge
+> removed; only the collector's own counters span both sides of the reduction.
 
 ## 4. What healthy looks like
 
@@ -79,9 +79,9 @@ out, and nothing measured was lost.
 | `otelcol_exporter_sent_metric_points`                                               | Non-zero if you send metrics                                                                                                                                                                                           |
 | `dash0.edge_settings.mode{mode="proxy"}`                                            | `1` on every collector pod                                                                                                                                                                                             |
 | `dash0.edge_settings.grpc_stream_open`                                              | `1`                                                                                                                                                                                                                    |
-| `dash0.edge_settings.rules_loaded{kind="signal_to_metrics"}`                        | Non-zero and steady. This counts the whole snapshot your organisation sends, every dataset, not the rules in yours, so do not expect it to match what you just created. A fall toward zero is the rule-wipe signature. |
+| `dash0.edge_settings.rules_loaded{kind="signal_to_metrics"}`                        | Zero until your organisation has signal-to-metrics rules, then non-zero and steady. This counts the whole snapshot your organisation sends, every dataset, not the rules in yours, so do not expect it to match what you just created. A fall from non-zero toward zero is the rule-wipe signature. |
 | `dash0.edge_proxy.subscriber.count`                                                 | Summed across Edge Proxy pods, equals your collector pod count                                                                                                                                                         |
-| `dash0.sampling_processor.spans_forwarded_fallback`                                 | **Flat once running.** A fresh collector accrues some of these in the seconds between starting and receiving its first rule snapshot, so a non-zero total right after install is expected. Judge it on `rate(...[2m])`, which must be zero. A rate above zero means rules are not reaching the collector.                                                                                                                                             |
+| `dash0.sampling_processor.spans_forwarded_fallback`                                 | Depends on whether your **organisation** has any sampling rules. If it does: flat once running, and a rate above zero means rules are not reaching this collector. A fresh collector always accrues some in the seconds before its first snapshot arrives, so judge it on `rate(...[2m])`, not on the total. If your organisation has no sampling rules anywhere: this rises steadily at your full span rate, which is fallback at ratio `1.0` keeping everything, and it is correct. It stops as soon as the organisation's first rule exists. |
 | `dash0.trace_reservoir.watch_expirations`                                           | **Flat at zero**, by `rate(...[2m])`. An increase means decisions arrive after the trace left the buffer.                                                                                                                                  |
 | `dash0.trace_reservoir.watch_matches` + `watch_direct_forwards` vs `spans_ingested` | Your real keep ratio                                                                                                                                                                                                   |
 | `dash0.decision_maker_client.decisions_dropped`                                     | Zero. Non-zero means under-kept or partial traces.                                                                                                                                                                     |

@@ -41,8 +41,9 @@ dash0:
     # into a Deployment; the containers compose their header strings from a
     # secretKeyRef at pod start.
     value: ""
-    # Alternative to value: the name of a Secret you created yourself. When set,
-    # value is ignored and the chart creates no Secret.
+    # Alternative to value: the name of a Secret you created yourself. Set
+    # exactly one of the two; setting both fails the install. When set, the
+    # chart creates no Secret of its own.
     existingSecret: ""
     # The key inside existingSecret that holds the raw token.
     existingSecretKey: token
@@ -194,13 +195,16 @@ collector:
 
   sampling:
     # What happens when sampling rules are not available: at startup, during a
-    # connectivity blip, or when the dataset has no rules at all.
+    # connectivity blip, or when your organisation has no sampling rules
+    # anywhere. A dataset with no rules inside an organisation that has rules
+    # elsewhere never reaches this: the collector receives the feed, finds
+    # nothing carrying that dataset, and passes everything through.
     #
     # The collector's own default is 0.01, which keeps 1%. While you are still
     # setting rules up that is hard to tell apart from a working install, so
-    # this chart ships 1.0: keep everything until real rules arrive, and a
-    # dataset with no rules yet shows up as no reduction rather than as 1% of
-    # your data. Lower it once your rules are in place.
+    # this chart ships 1.0: keep everything until real rules arrive, and an
+    # organisation with no rules yet shows up as no reduction rather than as 1%
+    # of your data. Lower it once your rules are in place.
     fallbackSampleRatio: "1.0"
 
   logLevel: info

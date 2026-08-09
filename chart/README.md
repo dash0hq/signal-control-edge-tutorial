@@ -260,6 +260,9 @@ helm template t ./chart -n dash0-signal-control \
   | python3 -c 'import sys,yaml; [sys.stdout.write(d["data"]["config.yaml"]) for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")=="ConfigMap"]' \
   > /tmp/cfg/config.yaml
 
+# an empty file validates clean and would tell you nothing
+test -s /tmp/cfg/config.yaml || { echo 'config extraction failed'; exit 1; }
+
 cat > /tmp/cfg/collector.env <<'EOF'
 DASH0_DATASET=example
 DASH0_AUTH_TOKEN=auth_x
