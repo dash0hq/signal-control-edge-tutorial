@@ -159,10 +159,24 @@ service:
     metrics: { exporters: [..., otlp/dash0-edge] }     # optional
 ```
 
+If your central collector is the upstream `opentelemetry-collector` Helm chart, all of the above
+goes under `config:` in its values file, and a pipeline you override there replaces the chart's
+exporter list rather than adding to it, so name every destination you still want.
+
+`tls: { insecure: true }` is not optional on this hop. The edge collector's OTLP receiver is
+plaintext gRPC inside the cluster, so an exporter block copied from an existing internet facing
+destination, where `insecure` is `false`, fails every export with `tls: first record does not look
+like a TLS handshake`.
+
 Set `send_batch_max_size` on your `batch` processor so one OTLP request stays under the receive
 limit. `8192` is reasonable; the edge collector accepts 16 MiB per message
 (`collector.otlpMaxRecvMsgSizeMib`). Round robin across the collector pods is correct and needs no
 trace aware load balancer.
+
+Your `batch` timeout is subtracted from the reservoir budget, because a trace's spans can be split
+across consecutive batches. With the default `collector.reservoir.bufferDuration` of 30 s, a 10 s
+batch timeout leaves about 20 s of real reassembly time. Adding the edge collector as a second
+exporter also means your central collector's `memory_limiter` ceiling now covers two sending queues.
 
 | Do not                                                    | Because                                                                                                                                                         |
 |-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
