@@ -35,8 +35,8 @@ flowchart LR
   proxy <-. "TLS" .-> control
 ```
 
-Solid arrows are telemetry, dotted arrows are the control plane. Your existing destinations keep
-receiving exactly what they receive today.
+_Solid arrows are telemetry, dotted arrows are the control plane. Your existing destinations keep
+receiving exactly what they receive today._
 
 ## Prerequisites
 
