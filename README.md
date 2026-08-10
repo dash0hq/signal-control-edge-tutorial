@@ -13,6 +13,8 @@ of one per pod. Rules live in Dash0 and are pushed out live, with no redeploy an
 
 Nothing in front of your central collector changes.
 
+## Overview
+
 ```mermaid
 flowchart LR
   apps["your apps"]
