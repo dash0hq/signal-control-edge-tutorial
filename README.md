@@ -10,6 +10,7 @@ central collector sends it OTLP, and it enriches, spam filters, derives RED and 
 The **Edge Proxy** gives that
 collector fleet one outbound connection for the sampling decision stream and the rule feed instead
 of one per pod. Rules live in Dash0 and are pushed out live, with no redeploy and no restart.
+
 Nothing in front of your central collector changes.
 
 ```mermaid
