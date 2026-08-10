@@ -98,6 +98,8 @@ spec:
                   name: {{ include "dash0edge.tokenSecretName" . }}
                   key: {{ include "dash0edge.tokenSecretKey" . }}
             # --- sampling decision stream -----------------------------------
+            - name: UPSTREAM_TAILSAMPLING_ENABLED
+              value: {{ .Values.edgeProxy.tailSampling.enabled | quote }}
             - name: UPSTREAM_ADDRESS
               value: {{ include "dash0edge.decisionMakerEndpoint" . | quote }}
             - name: UPSTREAM_HEADERS
