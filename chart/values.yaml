@@ -141,6 +141,24 @@ edgeProxy:
   # quietly dropped by the collectors. Failing loudly is the right trade here.
   fallbackMinConnectedRatio: "1.0"
 
+  tailSampling:
+    # The sampling decision stream, which is what tail sampling needs. Turning
+    # it off leaves a settings-only Edge Proxy: spam filters, signal-to-metrics
+    # and RED metrics all keep working, and no tail sampling happens, so the
+    # collector keeps everything at collector.sampling.fallbackSampleRatio.
+    #
+    # Set this to false only when the Dash0 region you are pointed at does not
+    # serve the Decision-Maker. The signature is the Edge Proxy never becoming
+    # Ready while its logs repeat:
+    #
+    #   SamplingRules stream failed, attempting to reconnect
+    #   rpc error: code = Unimplemented desc =
+    #
+    # An empty Unimplemented message means the request was answered before it
+    # reached anything that authenticates, so it is a routing gap and not your
+    # token. Check with Dash0 support before setting this.
+    enabled: true
+
   # Stopgap for a cluster whose DNS hands these IPv4-only pods an IPv6
   # address for the Dash0 endpoints. Pin the IPv4 here. The address rotates,
   # so treat it as temporary and fix the resolver. See docs/verify.md.
