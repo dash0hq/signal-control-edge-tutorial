@@ -204,6 +204,14 @@ Stop the traffic without uninstalling:
 kubectl -n dash0-signal-control scale deploy/gen-checkout --replicas=0
 ```
 
+That stops the synthetic traffic, not all writes: both workloads keep exporting their own
+self-telemetry to the same dataset. To stop everything reaching Dash0 without uninstalling, scale
+both to zero as well, then scale back when you need them.
+
+```bash
+kubectl -n dash0-signal-control scale deploy/dash0-edge-collector deploy/dash0-edge-proxy --replicas=0
+```
+
 ## Sizing
 
 The reservoir holds spans while their traces wait for a sampling decision, so it needs

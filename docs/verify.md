@@ -73,6 +73,26 @@ The middle one is what feeds RED metrics and signal-to-metrics rules. A healthy 
 gap between the first and the third with the second close to the first: sampling took the volume
 out, and nothing measured was lost.
 
+If you would rather not leave the terminal, the same queries run against the Prometheus-compatible
+endpoint with the token you already have. The dataset goes in a header, not the query:
+
+```bash
+q() {
+  curl -sS -G "${DASH0_API_URL}/api/prometheus/api/v1/query" \
+    -H "Authorization: Bearer ${DASH0_TOKEN}" \
+    -H "Dash0-Dataset: ${DASH0_DATASET}" \
+    --data-urlencode "query=$1" \
+    | python3 -c 'import sys,json; r=json.load(sys.stdin)["data"]["result"]; print(round(float(r[0]["value"][1]),2) if r else "no data")'
+}
+
+q 'sum(rate({otel_metric_name="otelcol_receiver_accepted_spans"}[3m]))'
+q 'sum(rate({otel_metric_name="dash0.red_metrics_connector.spans_consumed"}[3m]))'
+q 'sum(rate({otel_metric_name="otelcol_exporter_sent_spans"}[3m]))'
+```
+
+Swap `query` for `query_range` with `start`, `end` and `step` to watch a rule take effect over time,
+which is the clearest way to see the third number fall while the first two hold.
+
 > Judge the reduction from these three counters. Anything measured on the Dash0 side is measured
 > after the edge collector has already reduced the stream, so it cannot show you what the edge
 > removed; only the collector's own counters span both sides of the reduction.
