@@ -3,7 +3,7 @@
 Run [Dash0](https://www.dash0.com) SignalControl in your own Kubernetes cluster. Two workloads go
 into one namespace.
 
-The **edge collector** is an OpenTelemetry Collector in gateway position: your
+The **Edge Collector** is an OpenTelemetry Collector in gateway position: your
 central collector sends it OTLP, and it enriches, spam filters, derives RED and custom metrics from
 100% of the signal, tail samples, then exports what survives to Dash0.
 
