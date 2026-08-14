@@ -1,5 +1,16 @@
 # Dash0 SignalControl on the edge - tutorial
 
+> [!WARNING]
+> ## ⚠️ NOT FOR PRODUCTION USE ⚠️
+>
+> **This repository is temporary documentation for prototypes.**
+>
+> Everything here (the charts, the manifests and the guides) exists to support prototyping and
+> evaluation only. It is not supported, not hardened, and not covered by any stability guarantee.
+> Contents can change or disappear without notice, and there is no upgrade path.
+>
+> **Do not deploy this to a production cluster or point it at production telemetry.**
+
 Run [Dash0](https://www.dash0.com) SignalControl in your own Kubernetes cluster. Two workloads go
 into one namespace.
 
